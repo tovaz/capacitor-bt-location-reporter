@@ -45,27 +45,33 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
             extraFields:    call.getObject("extraPayloadFields") as? [String: Any] ?? [:]
         )
 
-        if coordinator == nil {
-            coordinator = BtLocationReporter(plugin: self)
-        }
-        coordinator?.start(config: config) { [weak self] error in
-            if let error = error {
-                self?.coordinator = nil
-                call.reject(error.localizedDescription)
-            } else {
-                call.resolve()
+        Task { @MainActor in
+            if self.coordinator == nil {
+                self.coordinator = BtLocationReporter(plugin: self)
+            }
+            self.coordinator?.start(config: config) { [weak self] error in
+                if let error = error {
+                    self?.coordinator = nil
+                    call.reject(error.localizedDescription)
+                } else {
+                    call.resolve()
+                }
             }
         }
     }
 
     @objc func stop(_ call: CAPPluginCall) {
-        coordinator?.stop()
-        coordinator = nil
-        call.resolve()
+        Task { @MainActor in
+            self.coordinator?.stop()
+            self.coordinator = nil
+            call.resolve()
+        }
     }
 
     @objc func isRunning(_ call: CAPPluginCall) {
-        call.resolve(["running": coordinator?.isRunning ?? false])
+        Task { @MainActor in
+            call.resolve(["running": self.coordinator?.isRunning ?? false])
+        }
     }
 
     @objc func addDevices(_ call: CAPPluginCall) {
@@ -77,8 +83,10 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
                   let pajId = dict["pajDeviceId"] else { return nil }
             return BtDeviceEntry(bleDeviceId: bleId, pajDeviceId: String(describing: pajId))
         }
-        coordinator?.addDevices(entries)
-        call.resolve()
+        Task { @MainActor in
+            self.coordinator?.addDevices(entries)
+            call.resolve()
+        }
     }
 
     @objc func removeDevices(_ call: CAPPluginCall) {
@@ -90,8 +98,10 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
                   let pajId = dict["pajDeviceId"] else { return nil }
             return BtDeviceEntry(bleDeviceId: bleId, pajDeviceId: String(describing: pajId))
         }
-        coordinator?.removeDevices(entries)
-        call.resolve()
+        Task { @MainActor in
+            self.coordinator?.removeDevices(entries)
+            call.resolve()
+        }
     }
 
     // ── Event helpers (called by BtLocationReporter) ──────────────────────
