@@ -25,9 +25,14 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
         manager.desiredAccuracy       = kCLLocationAccuracyBest
         manager.distanceFilter        = kCLDistanceFilterNone
         manager.pausesLocationUpdatesAutomatically = false
-        // Required for background location updates
+        // Background settings will be configured when actually starting location updates
+    }
+    
+    /// Configures background mode and starts location updates
+    private func startLocationUpdates() {
         manager.allowsBackgroundLocationUpdates = true
         manager.showsBackgroundLocationIndicator = true
+        manager.startUpdatingLocation()
     }
 
     // ── Public API ────────────────────────────────────────────────────────
@@ -37,7 +42,7 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
         let status = manager.authorizationStatus
         switch status {
         case .authorizedAlways:
-            manager.startUpdatingLocation()
+            startLocationUpdates()
             completion(true)
         case .authorizedWhenInUse:
             // Upgrade to Always
@@ -62,7 +67,7 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
                          didChangeAuthorization status: CLAuthorizationStatus) {
         switch status {
         case .authorizedAlways:
-            manager.startUpdatingLocation()
+            startLocationUpdates()
             permissionCompletion?(true)
             permissionCompletion = nil
         case .denied, .restricted:
@@ -80,9 +85,19 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager,
                          didFailWithError error: Error) {
-        // CLError.denied means permission was revoked at runtime
-        if let err = error as? CLError, err.code == .denied {
+        guard let err = error as? CLError else { return }
+        
+        switch err.code {
+        case .denied:
+            // Permission revoked at runtime
             manager.stopUpdatingLocation()
+        case .locationUnknown:
+            // Temporary failure - GPS not available yet, do nothing and wait
+            // This is common on simulator or when device just started
+            break
+        default:
+            // Other errors - log but continue
+            print("[LocationReporter] CLError: \(err.localizedDescription)")
         }
     }
 }
