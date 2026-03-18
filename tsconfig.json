@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "allowSyntheticDefaultImports": true,
+    "declaration": true,
+    "experimentalDecorators": true,
+    "module": "es2017",
+    "moduleResolution": "node",
+    "noImplicitAny": true,
+    "noUnusedLocals": true,
+    "outDir": "./dist/esm",
+    "sourceMap": false,
+    "strict": true,
+    "target": "es2017"
+  },
+  "include": ["src"]
+}
