@@ -1,5 +1,5 @@
 Pod::Spec.new do |s|
-  s.name            = 'BtLocationReporter'
+  s.name            = 'TovazCapacitorBtLocationReporter'
   s.version         = '0.1.0'
   s.summary         = 'Capacitor plugin for background BLE auto-connect and GPS location reporting'
   s.license         = 'MIT'
