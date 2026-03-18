@@ -11,7 +11,7 @@
     "android/build.gradle",
     "dist/",
     "ios/Plugin/",
-    "BtLocationReporter.podspec"
+    "TovazCapacitorBtLocationReporter.podspec"
   ],
   "author": "William Valdez",
   "license": "MIT",

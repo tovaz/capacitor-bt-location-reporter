@@ -6,7 +6,7 @@ export default {
     {
       file: 'dist/plugin.js',
       format: 'iife',
-      name: 'capacitorBtLocationReporter',
+      name: 'TovazCapacitorBtLocationReporter',
       globals: { '@capacitor/core': 'capacitorExports' },
       sourcemap: false,
       inlineDynamicImports: true,

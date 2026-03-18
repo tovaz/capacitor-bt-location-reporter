@@ -1,4 +1,4 @@
-var capacitorBtLocationReporter = (function (exports, core) {
+var TovazCapacitorBtLocationReporter = (function (exports, core) {
     'use strict';
 
     /**
