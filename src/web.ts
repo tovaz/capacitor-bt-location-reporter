@@ -32,4 +32,12 @@ export class BtLocationReporterWeb
   async removeDevices(_options: { devices: BtDeviceEntry[] }): Promise<void> {
     this.warn();
   }
+
+  async getLogPath(): Promise<{ path: string }> {
+    return { path: 'Not available on web' };
+  }
+
+  async getLogs(): Promise<{ logs: string }> {
+    return { logs: 'Logging not available on web' };
+  }
 }

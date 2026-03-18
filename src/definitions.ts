@@ -119,6 +119,17 @@ export interface BtLocationReporterPlugin {
   removeDevices(options: { devices: BtDeviceEntry[] }): Promise<void>;
 
   /**
+   * [DEBUG] Returns the path to the log file on the device.
+   * iOS: Documents/bt-location-reporter.log
+   */
+  getLogPath(): Promise<{ path: string }>;
+
+  /**
+   * [DEBUG] Returns the contents of the log file.
+   */
+  getLogs(): Promise<{ logs: string }>;
+
+  /**
    * Fired whenever the native layer successfully posts a location report.
    * Also fired on failure, with success=false.
    */

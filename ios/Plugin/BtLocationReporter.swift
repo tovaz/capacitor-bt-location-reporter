@@ -51,19 +51,30 @@ class BtLocationReporter: NSObject {
 
     init(plugin: BtLocationReporterPlugin) {
         self.plugin = plugin
+        super.init()
+        LOG("BtLocationReporter coordinator initialized")
     }
 
     // ── Public API ────────────────────────────────────────────────────────
 
     func start(config: BtLocationConfig, completion: @escaping (Error?) -> Void) {
-        guard !isRunning else { completion(nil); return }
+        LOG("start() called")
+        guard !isRunning else {
+            LOG("Already running, skipping start")
+            completion(nil)
+            return
+        }
         self.config  = config
         self.isRunning = true
+        LOG("Config set: endpoint=\(config.endpoint), intervalMs=\(config.intervalMs), devices count=\(config.devices.count)")
 
         // 1. Start location tracking first (prompts user if needed)
+        LOG("Creating LocationReporter...")
         locationMgr = LocationReporter()
+        LOG("Requesting location permission...")
         locationMgr?.requestAlwaysPermission { [weak self] granted in
             guard let self else { return }
+            LOG("Location permission result: \(granted ? "GRANTED" : "DENIED")")
             if !granted {
                 self.isRunning = false
                 completion(NSError(domain: "BtLocationReporter",
@@ -73,20 +84,25 @@ class BtLocationReporter: NSObject {
             }
 
             // 2. Start BLE manager (uses BLE UUIDs for connection management)
+            LOG("Creating BleManager with \(config.bleDeviceIds.count) device IDs...")
             self.bleManager = BleManager(
                 deviceIds: config.bleDeviceIds,
                 onConnected:    { [weak self] id in self?.handleBleConnected(id) },
                 onDisconnected: { [weak self] id in self?.handleBleDisconnected(id) }
             )
+            LOG("Starting BleManager...")
             self.bleManager?.start()
 
             // 3. Start report timer
+            LOG("Starting report timer with interval \(config.intervalMs)ms")
             self.scheduleReportTimer(intervalMs: config.intervalMs)
+            LOG("All components started successfully")
             completion(nil)
         }
     }
 
     func stop() {
+        LOG("stop() called")
         isRunning = false
         reportTimer?.invalidate()
         reportTimer = nil
@@ -94,27 +110,38 @@ class BtLocationReporter: NSObject {
         bleManager  = nil
         locationMgr?.stop()
         locationMgr = nil
+        LOG("All components stopped")
     }
 
     func addDevices(_ entries: [BtDeviceEntry]) {
+        LOG("addDevices() called with \(entries.count) devices")
         let bleIds = entries.map { $0.bleDeviceId }
         bleManager?.addDevices(bleIds)
-        entries.forEach { dynamicPajIdMap[$0.bleDeviceId] = $0.pajDeviceId }
+        entries.forEach {
+            dynamicPajIdMap[$0.bleDeviceId] = $0.pajDeviceId
+            LOG("  Added: bleId=\($0.bleDeviceId), pajId=\($0.pajDeviceId)")
+        }
     }
 
     func removeDevices(_ entries: [BtDeviceEntry]) {
+        LOG("removeDevices() called with \(entries.count) devices")
         let bleIds = entries.map { $0.bleDeviceId }
         bleManager?.removeDevices(bleIds)
-        bleIds.forEach { dynamicPajIdMap.removeValue(forKey: $0) }
+        bleIds.forEach {
+            dynamicPajIdMap.removeValue(forKey: $0)
+            LOG("  Removed: bleId=\($0)")
+        }
     }
 
     // ── BLE event handlers ────────────────────────────────────────────────
 
     private func handleBleConnected(_ deviceId: String) {
+        LOG("BLE CONNECTED: \(deviceId)")
         plugin?.emitBleConnection(deviceId: deviceId, connected: true)
     }
 
     private func handleBleDisconnected(_ deviceId: String) {
+        LOG("BLE DISCONNECTED: \(deviceId)")
         plugin?.emitBleConnection(deviceId: deviceId, connected: false)
     }
 
@@ -131,12 +158,24 @@ class BtLocationReporter: NSObject {
     }
 
     private func tick() {
-        guard isRunning,
-              let config   = config,
-              let location = locationMgr?.lastLocation,
-              let connectedIds = bleManager?.connectedIds, !connectedIds.isEmpty
-        else { return }
-
+        guard isRunning else {
+            LOG("tick() - not running, skipping")
+            return
+        }
+        guard let config = config else {
+            LOG("tick() - no config, skipping")
+            return
+        }
+        guard let location = locationMgr?.lastLocation else {
+            LOG("tick() - no location yet, skipping")
+            return
+        }
+        guard let connectedIds = bleManager?.connectedIds, !connectedIds.isEmpty else {
+            LOG("tick() - no connected BLE devices, skipping (connectedIds=\(bleManager?.connectedIds ?? []))")
+            return
+        }
+        
+        LOG("tick() - all conditions met, sending report")
         sendReport(config: config, location: location, connectedIds: connectedIds)
     }
 
@@ -145,12 +184,15 @@ class BtLocationReporter: NSObject {
     private func sendReport(config: BtLocationConfig,
                              location: CLLocation,
                              connectedIds: [String]) {
-        guard let url = URL(string: config.endpoint) else { return }
-
+        LOG("sendReport() called")
+        LOG("  Location: lat=\(location.coordinate.latitude), lng=\(location.coordinate.longitude), accuracy=\(location.horizontalAccuracy)")
+        LOG("  Connected BLE IDs: \(connectedIds)")
+        
         // Map connected BLE UUIDs → PAJ device IDs for the report payload
         // Merge config map (set at start) + dynamic map (devices added at runtime)
         let pajIdMap = config.pajIdMap.merging(dynamicPajIdMap) { _, new in new }
         let connectedPajIds = connectedIds.compactMap { pajIdMap[$0] }
+        LOG("  Mapped PAJ IDs: \(connectedPajIds)")
 
         var body: [String: Any] = config.extraFields
         body["devicesId"] = connectedPajIds
@@ -159,7 +201,29 @@ class BtLocationReporter: NSObject {
         body["accuracy"]   = location.horizontalAccuracy
         body["timestamp"]  = Int64(Date().timeIntervalSince1970 * 1_000)
 
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else { return }
+        // Convert to JSON string for logging
+        if let jsonData = try? JSONSerialization.data(withJSONObject: body, options: .prettyPrinted),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            LOG("  PAYLOAD JSON:\n\(jsonString)")
+        }
+        
+        // DEBUG MODE: Skip HTTP request, just log the payload
+        LOG("  [DEBUG] HTTP POST skipped - endpoint would be: \(config.endpoint)")
+        
+        // Emit event to JS layer (simulating success)
+        Task { @MainActor [weak self] in
+            self?.plugin?.emitLocationReport(payload: body, httpStatus: 200, success: true)
+        }
+        
+        /* UNCOMMENT THIS BLOCK TO ENABLE ACTUAL HTTP POSTING:
+        guard let url = URL(string: config.endpoint) else {
+            LOG("  ERROR: Invalid endpoint URL")
+            return
+        }
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else {
+            LOG("  ERROR: Failed to serialize JSON")
+            return
+        }
 
         var request        = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -169,16 +233,18 @@ class BtLocationReporter: NSObject {
             request.setValue(token, forHTTPHeaderField: "Authorization")
         }
 
-        // Use background URLSession so iOS can complete the request even if the app suspends
+        LOG("  Sending HTTP POST to \(config.endpoint)...")
         let session = URLSession(configuration: .background(withIdentifier: "com.paj.btlocationreporter.upload"))
         let task = session.dataTask(with: request) { [weak self] data, response, error in
             let httpStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
             let success    = error == nil && (200..<300).contains(httpStatus)
+            LOG("  HTTP response: status=\(httpStatus), success=\(success), error=\(error?.localizedDescription ?? "none")")
 
             Task { @MainActor [weak self] in
                 self?.plugin?.emitLocationReport(payload: body, httpStatus: httpStatus, success: success)
             }
         }
         task.resume()
+        */
     }
 }
