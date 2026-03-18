@@ -19,7 +19,7 @@ to an HTTPS endpoint — even when the app is in the background or the screen is
 
 ```bash
 # If published to npm:
-npm install capacitor-bt-location-reporter
+npm install @tovaz/capacitor-bt-location-reporter
 npx cap sync
 
 # Or from a local path during development:
@@ -60,11 +60,17 @@ Add the following to your app's `ios/App/App/Info.plist`:
 ## Usage (TypeScript / Angular)
 
 ```typescript
-import { BtLocationReporter } from 'capacitor-bt-location-reporter';
+import { BtLocationReporter } from '@tovaz/capacitor-bt-location-reporter';
 
 // Start the background service
 await BtLocationReporter.start({
-  deviceIds:        ['AA:BB:CC:DD:EE:FF'],   // Android MACs / iOS UUIDs
+  // Each entry maps a BLE hardware ID to the PAJ platform device ID.
+  // The plugin uses bleDeviceId to connect/reconnect;
+  // pajDeviceId is what gets sent in the location payload.
+  devices: [
+    { bleDeviceId: 'AA:BB:CC:DD:EE:FF', pajDeviceId: 12345 },  // Android: MAC address
+    { bleDeviceId: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', pajDeviceId: 67890 },  // iOS: UUID
+  ],
   reportEndpoint:   'https://api.example.com/v1/bt-location',
   authToken:        'Bearer eyJhbGci...',
   reportIntervalMs: 30_000,                  // default: 30 s
@@ -79,12 +85,20 @@ await BtLocationReporter.addListener('locationReport', event => {
 });
 
 // Listen for BLE connection events
+// Note: deviceId here is the BLE hardware ID (not the PAJ ID)
 await BtLocationReporter.addListener('bleConnection', event => {
   console.log(event.deviceId, event.connected ? 'connected' : 'disconnected');
 });
 
-// Add a new device without restarting
-await BtLocationReporter.addDevices({ deviceIds: ['11:22:33:44:55:66'] });
+// Add new devices without restarting the service
+await BtLocationReporter.addDevices({
+  devices: [{ bleDeviceId: '11:22:33:44:55:66', pajDeviceId: 99999 }],
+});
+
+// Remove devices without restarting
+await BtLocationReporter.removeDevices({
+  devices: [{ bleDeviceId: 'AA:BB:CC:DD:EE:FF', pajDeviceId: 12345 }],
+});
 
 // Check if running
 const { running } = await BtLocationReporter.isRunning();
@@ -96,39 +110,52 @@ await BtLocationReporter.removeAllListeners();
 
 ### Payload sent to the endpoint
 
+Only PAJ device IDs of **currently connected** BLE devices are included.
+
 ```json
 {
-  "deviceIds":          ["AA:BB:CC:DD:EE:FF"],
-  "connectedDeviceIds": ["AA:BB:CC:DD:EE:FF"],
-  "lat":       48.1234,
-  "lng":       11.5678,
-  "accuracy":  5.0,
-  "timestamp": 1710000000000,
+  "devicesId":  [12345, 67890],
+  "lat":        48.1234,
+  "lng":        11.5678,
+  "accuracy":   5.0,
+  "timestamp":  1710000000000,
   "customerId": 42
 }
 ```
 
 ---
 
-## Integration with existing services
+## Integration with `bt-auto-connect.service.ts`
 
-In `bt-auto-connect.service.ts`, call the plugin when the service starts:
+Call the plugin from `BtAutoConnectService.start()` after the existing BLE logic:
 
 ```typescript
-import { BtLocationReporter } from 'capacitor-bt-location-reporter';
+import { BtLocationReporter } from '@tovaz/capacitor-bt-location-reporter';
+import { environment } from 'src/environments/environment';
 
 async start(): Promise<void> {
   if (!Capacitor.isNativePlatform()) return;
   // ... existing logic ...
 
-  const ids = linked.map(d => d.device.deviceId);
+  const linked = this.btUiService.btLinkedDevices.get().value ?? [];
+
   await BtLocationReporter.start({
-    deviceIds:      ids,
-    reportEndpoint: environment.btLocationEndpoint,
-    authToken:      `Bearer ${this.authToken}`,
+    devices: linked.map((d: any) => ({
+      bleDeviceId: d.device.deviceId,
+      pajDeviceId: d['pajDeviceId'],
+    })),
+    reportEndpoint:   environment.btLocationEndpoint,
+    authToken:        `Bearer ${this.authToken}`,
+    reportIntervalMs: 30_000,
+    notificationTitle: 'PAJ Tracker',
+    notificationText:  'Monitoring your PAJ device in background…',
   });
 }
 ```
+
+> The native layer handles BLE reconnection and GPS reporting independently.
+> `BtMobileLocationService` can remain active for foreground reporting;
+> the plugin takes over when the app goes to the background.
 
 ---
 

@@ -39,7 +39,8 @@ class BtLocationReporterService : Service() {
         const val ACTION_START = "com.paj.btlocationreporter.START"
         const val ACTION_STOP  = "com.paj.btlocationreporter.STOP"
 
-        const val EXTRA_DEVICE_IDS  = "deviceIds"
+        const val EXTRA_DEVICE_IDS  = "deviceIds"   // BLE IDs for BleConnectionManager
+        const val EXTRA_DEVICES_JSON = "devicesJson"  // full [{bleDeviceId,pajDeviceId}] JSON
         const val EXTRA_ENDPOINT    = "endpoint"
         const val EXTRA_AUTH_TOKEN  = "authToken"
         const val EXTRA_INTERVAL_MS = "intervalMs"
@@ -57,8 +58,10 @@ class BtLocationReporterService : Service() {
     }
 
     sealed class Command {
-        data class AddDevices(val ids: List<String>)    : Command()
-        data class RemoveDevices(val ids: List<String>) : Command()
+        /** bleId → pajId entries to connect and add to the lookup map */
+        data class AddDevices(val entries: Map<String, String>)    : Command()
+        /** BLE IDs to disconnect and remove from the lookup map */
+        data class RemoveDevices(val bleIds: List<String>) : Command()
     }
 
     // ── State ─────────────────────────────────────────────────────────────
@@ -78,6 +81,8 @@ class BtLocationReporterService : Service() {
     private var authToken  = ""
     private var intervalMs = 30_000L
     private var extraJson  = "{}"
+    /** Maps BLE device ID → PAJ device ID, built once on start. */
+    private var pajIdMap   = mapOf<String, String>()
 
     // ── Service lifecycle ─────────────────────────────────────────────────
 
@@ -102,6 +107,16 @@ class BtLocationReporterService : Service() {
         val title  = intent.getStringExtra(EXTRA_NOTIF_TITLE) ?: "BT Location Reporter"
         val text   = intent.getStringExtra(EXTRA_NOTIF_TEXT)  ?: "Tracking location in background…"
         val ids    = intent.getStringArrayListExtra(EXTRA_DEVICE_IDS) ?: arrayListOf()
+
+        // Build the bleId → pajId lookup map from the devices JSON array
+        val devicesJson = intent.getStringExtra(EXTRA_DEVICES_JSON) ?: "[]"
+        pajIdMap = runCatching {
+            val arr = org.json.JSONArray(devicesJson)
+            (0 until arr.length()).associate { i ->
+                val obj = arr.getJSONObject(i)
+                obj.getString("bleDeviceId") to obj.getString("pajDeviceId")
+            }
+        }.getOrDefault(emptyMap())
 
         startForeground(NOTIF_ID, buildNotification(title, text))
         startLocationUpdates()
@@ -155,8 +170,14 @@ class BtLocationReporterService : Service() {
                 // Process any pending add/remove commands from the JS layer
                 pendingCommand?.let { cmd ->
                     when (cmd) {
-                        is Command.AddDevices    -> bleManager.addDevices(cmd.ids)
-                        is Command.RemoveDevices -> bleManager.removeDevices(cmd.ids)
+                        is Command.AddDevices    -> {
+                            bleManager.addDevices(cmd.entries.keys.toList())
+                            pajIdMap = pajIdMap + cmd.entries
+                        }
+                        is Command.RemoveDevices -> {
+                            bleManager.removeDevices(cmd.bleIds)
+                            pajIdMap = pajIdMap - cmd.bleIds.toSet()
+                        }
                     }
                     pendingCommand = null
                 }
@@ -175,9 +196,10 @@ class BtLocationReporterService : Service() {
 
     private fun postLocationReport(location: Location) {
         val extra  = runCatching { JSONObject(extraJson) }.getOrDefault(JSONObject())
+        // Map connected BLE IDs → PAJ device IDs for the report payload
+        val connectedPajIds = bleManager.connectedIds.mapNotNull { pajIdMap[it] }
         val body   = JSONObject(extra.toMap()).apply {
-            put("deviceIds",          JSONObject.wrap(bleManager.targetIds.toList()))
-            put("connectedDeviceIds", JSONObject.wrap(bleManager.connectedIds.toList()))
+            put("devicesId", JSONObject.wrap(connectedPajIds))
             put("lat",       location.latitude)
             put("lng",       location.longitude)
             put("accuracy",  location.accuracy)

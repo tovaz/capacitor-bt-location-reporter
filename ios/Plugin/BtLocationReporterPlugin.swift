@@ -21,8 +21,8 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
     // ── Plugin methods ────────────────────────────────────────────────────
 
     @objc func start(_ call: CAPPluginCall) {
-        guard let deviceIds = call.getArray("deviceIds") as? [String], !deviceIds.isEmpty else {
-            call.reject("deviceIds array is required and must not be empty")
+        guard let rawDevices = call.getArray("devices") as? [[String: Any]], !rawDevices.isEmpty else {
+            call.reject("devices array is required and must not be empty")
             return
         }
         guard let endpoint = call.getString("reportEndpoint") else {
@@ -30,8 +30,15 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
 
+        // Parse [{ bleDeviceId, pajDeviceId }] from JS
+        let devices: [BtDeviceEntry] = rawDevices.compactMap { dict in
+            guard let bleId = dict["bleDeviceId"] as? String,
+                  let pajId = dict["pajDeviceId"] else { return nil }
+            return BtDeviceEntry(bleDeviceId: bleId, pajDeviceId: String(describing: pajId))
+        }
+
         let config = BtLocationConfig(
-            deviceIds:      deviceIds,
+            devices:        devices,
             endpoint:       endpoint,
             authToken:      call.getString("authToken"),
             intervalMs:     call.getDouble("reportIntervalMs") ?? 30_000,
@@ -62,18 +69,28 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func addDevices(_ call: CAPPluginCall) {
-        guard let ids = call.getArray("deviceIds") as? [String] else {
-            call.reject("deviceIds is required"); return
+        guard let rawDevices = call.getArray("devices") as? [[String: Any]], !rawDevices.isEmpty else {
+            call.reject("devices array is required"); return
         }
-        coordinator?.addDevices(ids)
+        let entries = rawDevices.compactMap { dict -> BtDeviceEntry? in
+            guard let bleId = dict["bleDeviceId"] as? String,
+                  let pajId = dict["pajDeviceId"] else { return nil }
+            return BtDeviceEntry(bleDeviceId: bleId, pajDeviceId: String(describing: pajId))
+        }
+        coordinator?.addDevices(entries)
         call.resolve()
     }
 
     @objc func removeDevices(_ call: CAPPluginCall) {
-        guard let ids = call.getArray("deviceIds") as? [String] else {
-            call.reject("deviceIds is required"); return
+        guard let rawDevices = call.getArray("devices") as? [[String: Any]], !rawDevices.isEmpty else {
+            call.reject("devices array is required"); return
         }
-        coordinator?.removeDevices(ids)
+        let entries = rawDevices.compactMap { dict -> BtDeviceEntry? in
+            guard let bleId = dict["bleDeviceId"] as? String,
+                  let pajId = dict["pajDeviceId"] else { return nil }
+            return BtDeviceEntry(bleDeviceId: bleId, pajDeviceId: String(describing: pajId))
+        }
+        coordinator?.removeDevices(entries)
         call.resolve()
     }
 

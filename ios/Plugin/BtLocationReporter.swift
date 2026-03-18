@@ -2,13 +2,22 @@ import Foundation
 import CoreBluetooth
 import CoreLocation
 
+/// One entry in the devices list: the BLE UUID used for connection and the PAJ ID for reports.
+struct BtDeviceEntry {
+    let bleDeviceId: String
+    let pajDeviceId: String
+}
+
 /// Configuration passed from the JS layer.
 struct BtLocationConfig {
-    let deviceIds:  [String]
+    let devices:    [BtDeviceEntry]
     let endpoint:   String
     let authToken:  String?
     let intervalMs: Double
     let extraFields: [String: Any]
+
+    var bleDeviceIds: [String] { devices.map { $0.bleDeviceId } }
+    var pajIdMap: [String: String] { Dictionary(uniqueKeysWithValues: devices.map { ($0.bleDeviceId, $0.pajDeviceId) }) }
 }
 
 /**
@@ -35,6 +44,9 @@ class BtLocationReporter: NSObject {
     private var  locationMgr:  LocationReporter?
     private var  reportTimer:  Timer?
 
+    // Mutable map for devices added at runtime (after start)
+    private var dynamicPajIdMap: [String: String] = [:]
+
     // ── Init ──────────────────────────────────────────────────────────────
 
     init(plugin: BtLocationReporterPlugin) {
@@ -60,9 +72,9 @@ class BtLocationReporter: NSObject {
                 return
             }
 
-            // 2. Start BLE manager
+            // 2. Start BLE manager (uses BLE UUIDs for connection management)
             self.bleManager = BleManager(
-                deviceIds: config.deviceIds,
+                deviceIds: config.bleDeviceIds,
                 onConnected:    { [weak self] id in self?.handleBleConnected(id) },
                 onDisconnected: { [weak self] id in self?.handleBleDisconnected(id) }
             )
@@ -84,12 +96,16 @@ class BtLocationReporter: NSObject {
         locationMgr = nil
     }
 
-    func addDevices(_ ids: [String]) {
-        bleManager?.addDevices(ids)
+    func addDevices(_ entries: [BtDeviceEntry]) {
+        let bleIds = entries.map { $0.bleDeviceId }
+        bleManager?.addDevices(bleIds)
+        entries.forEach { dynamicPajIdMap[$0.bleDeviceId] = $0.pajDeviceId }
     }
 
-    func removeDevices(_ ids: [String]) {
-        bleManager?.removeDevices(ids)
+    func removeDevices(_ entries: [BtDeviceEntry]) {
+        let bleIds = entries.map { $0.bleDeviceId }
+        bleManager?.removeDevices(bleIds)
+        bleIds.forEach { dynamicPajIdMap.removeValue(forKey: $0) }
     }
 
     // ── BLE event handlers ────────────────────────────────────────────────
@@ -131,9 +147,13 @@ class BtLocationReporter: NSObject {
                              connectedIds: [String]) {
         guard let url = URL(string: config.endpoint) else { return }
 
+        // Map connected BLE UUIDs → PAJ device IDs for the report payload
+        // Merge config map (set at start) + dynamic map (devices added at runtime)
+        let pajIdMap = config.pajIdMap.merging(dynamicPajIdMap) { _, new in new }
+        let connectedPajIds = connectedIds.compactMap { pajIdMap[$0] }
+
         var body: [String: Any] = config.extraFields
-        body["deviceIds"]          = config.deviceIds
-        body["connectedDeviceIds"] = connectedIds
+        body["devicesId"] = connectedPajIds
         body["lat"]        = location.coordinate.latitude
         body["lng"]        = location.coordinate.longitude
         body["accuracy"]   = location.horizontalAccuracy

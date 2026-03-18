@@ -1,5 +1,6 @@
 import { WebPlugin } from '@capacitor/core';
 import type {
+  BtDeviceEntry,
   BtLocationConfig,
   BtLocationReporterPlugin,
 } from './definitions';
@@ -24,11 +25,11 @@ export class BtLocationReporterWeb
     return { running: false };
   }
 
-  async addDevices(_options: { deviceIds: string[] }): Promise<void> {
+  async addDevices(_options: { devices: BtDeviceEntry[] }): Promise<void> {
     this.warn();
   }
 
-  async removeDevices(_options: { deviceIds: string[] }): Promise<void> {
+  async removeDevices(_options: { devices: BtDeviceEntry[] }): Promise<void> {
     this.warn();
   }
 }

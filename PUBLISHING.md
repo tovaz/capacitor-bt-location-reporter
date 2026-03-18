@@ -51,7 +51,7 @@ npm login
 npm publish --access public
 ```
 
-El paquete quedará en `https://www.npmjs.com/package/capacitor-bt-location-reporter`.
+El paquete quedará en `https://www.npmjs.com/package/@tovaz/capacitor-bt-location-reporter`.
 
 ## 5. Publicar como GitHub Package (alternativa a npm)
 

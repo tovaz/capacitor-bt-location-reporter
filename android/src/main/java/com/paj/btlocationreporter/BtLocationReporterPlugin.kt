@@ -49,9 +49,17 @@ class BtLocationReporterPlugin : Plugin() {
 
     @PluginMethod
     fun start(call: PluginCall) {
-        val deviceIds = call.getArray("deviceIds")?.toList<String>() ?: emptyList()
-        val endpoint  = call.getString("reportEndpoint") ?: run {
+        // 'devices' is an array of { bleDeviceId, pajDeviceId } objects
+        val devicesArray = call.getArray("devices") ?: run {
+            call.reject("devices array is required"); return
+        }
+        val endpoint = call.getString("reportEndpoint") ?: run {
             call.reject("reportEndpoint is required"); return
+        }
+
+        // Extract BLE IDs for the connection manager
+        val bleIds = (0 until devicesArray.length()).mapNotNull { i ->
+            runCatching { devicesArray.getJSONObject(i).getString("bleDeviceId") }.getOrNull()
         }
 
         if (!hasRequiredPermissions()) {
@@ -61,13 +69,14 @@ class BtLocationReporterPlugin : Plugin() {
         }
 
         launchService(
-            deviceIds  = deviceIds,
-            endpoint   = endpoint,
-            authToken  = call.getString("authToken"),
-            intervalMs = call.getLong("reportIntervalMs") ?: 30_000L,
-            notifTitle = call.getString("notificationTitle") ?: "BT Location Reporter",
-            notifText  = call.getString("notificationText") ?: "Tracking location in background…",
-            extraJson  = call.getObject("extraPayloadFields")?.toString() ?: "{}"
+            deviceIds   = bleIds,
+            devicesJson = devicesArray.toString(),
+            endpoint    = endpoint,
+            authToken   = call.getString("authToken"),
+            intervalMs  = call.getLong("reportIntervalMs") ?: 30_000L,
+            notifTitle  = call.getString("notificationTitle") ?: "BT Location Reporter",
+            notifText   = call.getString("notificationText") ?: "Tracking location in background…",
+            extraJson   = call.getObject("extraPayloadFields")?.toString() ?: "{}"
         )
         call.resolve()
     }
@@ -90,15 +99,24 @@ class BtLocationReporterPlugin : Plugin() {
 
     @PluginMethod
     fun addDevices(call: PluginCall) {
-        val ids = call.getArray("deviceIds")?.toList<String>() ?: emptyList()
-        BtLocationReporterService.pendingCommand = BtLocationReporterService.Command.AddDevices(ids)
+        val devicesArray = call.getArray("devices") ?: run { call.reject("devices is required"); return }
+        val entries = (0 until devicesArray.length()).mapNotNull { i ->
+            runCatching {
+                val obj = devicesArray.getJSONObject(i)
+                obj.getString("bleDeviceId") to obj.getString("pajDeviceId")
+            }.getOrNull()
+        }.toMap()
+        BtLocationReporterService.pendingCommand = BtLocationReporterService.Command.AddDevices(entries)
         call.resolve()
     }
 
     @PluginMethod
     fun removeDevices(call: PluginCall) {
-        val ids = call.getArray("deviceIds")?.toList<String>() ?: emptyList()
-        BtLocationReporterService.pendingCommand = BtLocationReporterService.Command.RemoveDevices(ids)
+        val devicesArray = call.getArray("devices") ?: run { call.reject("devices is required"); return }
+        val bleIds = (0 until devicesArray.length()).mapNotNull { i ->
+            runCatching { devicesArray.getJSONObject(i).getString("bleDeviceId") }.getOrNull()
+        }
+        BtLocationReporterService.pendingCommand = BtLocationReporterService.Command.RemoveDevices(bleIds)
         call.resolve()
     }
 
@@ -132,6 +150,7 @@ class BtLocationReporterPlugin : Plugin() {
 
     private fun launchService(
         deviceIds: List<String>,
+        devicesJson: String,
         endpoint: String,
         authToken: String?,
         intervalMs: Long,
@@ -142,6 +161,7 @@ class BtLocationReporterPlugin : Plugin() {
         val intent = Intent(context, BtLocationReporterService::class.java).apply {
             action = BtLocationReporterService.ACTION_START
             putStringArrayListExtra(BtLocationReporterService.EXTRA_DEVICE_IDS, ArrayList(deviceIds))
+            putExtra(BtLocationReporterService.EXTRA_DEVICES_JSON, devicesJson)
             putExtra(BtLocationReporterService.EXTRA_ENDPOINT,    endpoint)
             putExtra(BtLocationReporterService.EXTRA_AUTH_TOKEN,  authToken ?: "")
             putExtra(BtLocationReporterService.EXTRA_INTERVAL_MS, intervalMs)

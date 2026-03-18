@@ -1,11 +1,23 @@
 /**
+ * Maps a BLE device ID to its corresponding PAJ device ID.
+ * The plugin connects/reconnects using bleDeviceId, but reports using pajDeviceId.
+ */
+export interface BtDeviceEntry {
+  /** BLE hardware ID — MAC address on Android, UUID string on iOS */
+  bleDeviceId: string;
+  /** PAJ platform device ID sent in every location report */
+  pajDeviceId: string | number;
+}
+
+/**
  * Configuration passed to the plugin when starting the background service.
  */
 export interface BtLocationConfig {
   /**
-   * List of BLE device IDs (UUIDs on iOS, MAC addresses on Android) to connect and monitor.
+   * List of devices to connect and monitor.
+   * BLE connection uses bleDeviceId; location reports use pajDeviceId.
    */
-  deviceIds: string[];
+  devices: BtDeviceEntry[];
 
   /**
    * HTTPS endpoint that will receive the POST payload on every location tick.
@@ -46,8 +58,8 @@ export interface BtLocationConfig {
  * Payload shape sent in every location report POST.
  */
 export interface BtLocationPayload {
-  deviceIds: string[];
-  connectedDeviceIds: string[];
+  /** PAJ device IDs of all currently connected BLE devices */
+  devicesId: (string | number)[];
   lat: number;
   lng: number;
   accuracy: number;
@@ -95,14 +107,16 @@ export interface BtLocationReporterPlugin {
   isRunning(): Promise<{ running: boolean }>;
 
   /**
-   * Adds additional BLE device IDs to monitor without restarting the service.
+   * Adds additional devices to monitor without restarting the service.
+   * Both bleDeviceId (for BLE connection) and pajDeviceId (for reports) are required.
    */
-  addDevices(options: { deviceIds: string[] }): Promise<void>;
+  addDevices(options: { devices: BtDeviceEntry[] }): Promise<void>;
 
   /**
-   * Removes BLE device IDs from monitoring without restarting the service.
+   * Removes devices from monitoring without restarting the service.
+   * Matched by bleDeviceId.
    */
-  removeDevices(options: { deviceIds: string[] }): Promise<void>;
+  removeDevices(options: { devices: BtDeviceEntry[] }): Promise<void>;
 
   /**
    * Fired whenever the native layer successfully posts a location report.

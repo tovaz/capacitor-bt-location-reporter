@@ -3,14 +3,15 @@
     "allowSyntheticDefaultImports": true,
     "declaration": true,
     "experimentalDecorators": true,
-    "module": "es2017",
+    "module": "ES2020",
     "moduleResolution": "node",
     "noImplicitAny": true,
     "noUnusedLocals": true,
     "outDir": "./dist/esm",
     "sourceMap": false,
     "strict": true,
-    "target": "es2017"
+    "target": "ES2017",
+    "skipLibCheck": true
   },
   "include": ["src"]
 }

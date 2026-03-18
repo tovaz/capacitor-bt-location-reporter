@@ -1,6 +1,6 @@
 {
-  "name": "capacitor-bt-location-reporter",
-  "version": "0.1.0",
+  "name": "@tovaz/capacitor-bt-location-reporter",
+  "version": "0.1.1",
   "description": "Capacitor plugin for background BLE auto-connect and GPS location reporting",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
@@ -13,14 +13,15 @@
     "ios/Plugin/",
     "BtLocationReporter.podspec"
   ],
-  "author": "PAJ",
+  "author": "William Valdez",
   "license": "MIT",
+  "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_ORG/capacitor-bt-location-reporter.git"
+    "url": "https://github.com/tovaz/capacitor-bt-location-reporter"
   },
   "bugs": {
-    "url": "https://github.com/YOUR_ORG/capacitor-bt-location-reporter/issues"
+    "url": "https://github.com/tovaz/capacitor-bt-location-reporter/issues"
   },
   "keywords": [
     "capacitor",
@@ -41,6 +42,7 @@
     "@capacitor/android": "^7.0.0",
     "@capacitor/core": "^7.0.0",
     "@capacitor/ios": "^7.0.0",
+    "@rollup/plugin-node-resolve": "^16.0.3",
     "rimraf": "^5.0.0",
     "rollup": "^4.0.0",
     "typescript": "^5.0.0"
