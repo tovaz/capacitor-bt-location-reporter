@@ -29,6 +29,12 @@ var TovazCapacitorBtLocationReporter = (function (exports, core) {
         async removeDevices(_options) {
             this.warn();
         }
+        async getLogPath() {
+            return { path: 'Not available on web' };
+        }
+        async getLogs() {
+            return { logs: 'Logging not available on web' };
+        }
     }
 
     var web = /*#__PURE__*/Object.freeze({

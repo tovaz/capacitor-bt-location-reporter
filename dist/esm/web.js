@@ -18,4 +18,10 @@ export class BtLocationReporterWeb extends WebPlugin {
     async removeDevices(_options) {
         this.warn();
     }
+    async getLogPath() {
+        return { path: 'Not available on web' };
+    }
+    async getLogs() {
+        return { logs: 'Logging not available on web' };
+    }
 }

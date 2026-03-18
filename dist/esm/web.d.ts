@@ -13,4 +13,10 @@ export declare class BtLocationReporterWeb extends WebPlugin implements BtLocati
     removeDevices(_options: {
         devices: BtDeviceEntry[];
     }): Promise<void>;
+    getLogPath(): Promise<{
+        path: string;
+    }>;
+    getLogs(): Promise<{
+        logs: string;
+    }>;
 }
