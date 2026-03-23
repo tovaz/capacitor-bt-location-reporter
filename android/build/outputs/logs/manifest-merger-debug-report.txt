@@ -1,0 +1,104 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:2:1-53:12
+INJECTED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:2:1-53:12
+	package
+		INJECTED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml
+	xmlns:android
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:2:11-69
+uses-permission#android.permission.BLUETOOTH_SCAN
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:5:5-6:58
+	android:usesPermissionFlags
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:6:9-55
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:5:22-70
+uses-permission#android.permission.BLUETOOTH_CONNECT
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:7:5-76
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:7:22-73
+uses-permission#android.permission.BLUETOOTH
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:8:5-95
+	android:maxSdkVersion
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:8:66-92
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:8:22-65
+uses-permission#android.permission.BLUETOOTH_ADMIN
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:9:5-101
+	android:maxSdkVersion
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:9:72-98
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:9:22-71
+uses-permission#android.permission.ACCESS_FINE_LOCATION
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:12:5-79
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:12:22-76
+uses-permission#android.permission.ACCESS_COARSE_LOCATION
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:13:5-81
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:13:22-78
+uses-permission#android.permission.ACCESS_BACKGROUND_LOCATION
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:15:5-85
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:15:22-82
+uses-permission#android.permission.FOREGROUND_SERVICE
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:18:5-77
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:18:22-74
+uses-permission#android.permission.FOREGROUND_SERVICE_LOCATION
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:19:5-86
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:19:22-83
+uses-permission#android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:20:5-94
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:20:22-91
+uses-permission#android.permission.INTERNET
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:23:5-67
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:23:22-64
+uses-permission#android.permission.ACCESS_NETWORK_STATE
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:24:5-79
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:24:22-76
+uses-permission#android.permission.WAKE_LOCK
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:27:5-68
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:27:22-65
+uses-permission#android.permission.RECEIVE_BOOT_COMPLETED
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:30:5-81
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:30:22-78
+application
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:32:5-51:19
+service#com.paj.btlocationreporter.BtLocationReporterService
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:35:9-39:72
+	android:enabled
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:37:13-35
+	android:exported
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:38:13-37
+	android:foregroundServiceType
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:39:13-69
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:36:13-54
+receiver#com.paj.btlocationreporter.BootReceiver
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:42:9-49:20
+	android:enabled
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:44:13-35
+	android:exported
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:45:13-36
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:43:13-41
+intent-filter#action:name:android.intent.action.BOOT_COMPLETED
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:46:13-48:29
+action#android.intent.action.BOOT_COMPLETED
+ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:47:17-79
+	android:name
+		ADDED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:47:25-76
+uses-sdk
+INJECTED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml
+INJECTED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml

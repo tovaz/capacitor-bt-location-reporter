@@ -1,134 +1,142 @@
 import Foundation
 import CoreLocation
+import UIKit
 
 /**
- * Wraps CLLocationManager for continuous background location updates.
+ * Background-capable location manager.
+ * Triggers callback on location updates instead of polling (works in background).
  *
- * The host app's Info.plist MUST include:
+ * Info.plist requirements:
  *   - NSLocationAlwaysAndWhenInUseUsageDescription
  *   - NSLocationWhenInUseUsageDescription
  *   - UIBackgroundModes → location
- *
- * [lastLocation] is updated on every CLLocationManager callback and
- * read by [BtLocationReporter] on each report tick.
  */
 class LocationReporter: NSObject, CLLocationManagerDelegate {
 
     private let manager = CLLocationManager()
     private(set) var lastLocation: CLLocation?
+    private(set) var isTracking = false
+    
+    /// Callback on new location - this triggers reports (works in background!)
+    var onLocationUpdate: ((CLLocation) -> Void)?
 
     private var permissionCompletion: ((Bool) -> Void)?
-    private var locationUpdateCount = 0
+    private var lastReportTime: Date = .distantPast
+    private var minReportInterval: TimeInterval = 30.0
+    private(set) var hasPermission = false
 
     override init() {
         super.init()
-        LOG("LocationReporter init")
-        manager.delegate              = self
-        manager.desiredAccuracy       = kCLLocationAccuracyBest
-        manager.distanceFilter        = kCLDistanceFilterNone
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.distanceFilter = 10  // Report when moved 10m
         manager.pausesLocationUpdatesAutomatically = false
-        LOG("  CLLocationManager configured")
-        // Background settings will be configured when actually starting location updates
+        manager.activityType = .otherNavigation
+        
+        // App lifecycle observers
+        NotificationCenter.default.addObserver(self, selector: #selector(appDidEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+        
+        LOG("[LocationReporter] Initialized")
     }
     
-    /// Configures background mode and starts location updates
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    func setReportInterval(ms: Double) {
+        minReportInterval = ms / 1000.0
+    }
+    
+    @objc private func appDidEnterBackground() {
+        LOG("[LocationReporter] === BACKGROUND === location updates continue")
+    }
+    
+    @objc private func appWillEnterForeground() {
+        LOG("[LocationReporter] === FOREGROUND ===")
+    }
+    
     private func startLocationUpdates() {
-        LOG("startLocationUpdates() - enabling background mode")
+        guard !isTracking else { return }
+        isTracking = true
         manager.allowsBackgroundLocationUpdates = true
         manager.showsBackgroundLocationIndicator = true
         manager.startUpdatingLocation()
-        LOG("  Location updates STARTED")
+        LOG("[LocationReporter] Started (background enabled)")
+    }
+    
+    /// Pause location updates (saves battery when no BLE connected)
+    func pause() {
+        guard isTracking else { return }
+        isTracking = false
+        manager.stopUpdatingLocation()
+        LOG("[LocationReporter] Paused (no BLE devices)")
+    }
+    
+    /// Resume location updates (when BLE device connects)
+    func resume() {
+        guard hasPermission, !isTracking else { return }
+        startLocationUpdates()
+        LOG("[LocationReporter] Resumed (BLE device connected)")
     }
 
-    // ── Public API ────────────────────────────────────────────────────────
-
-    /// Requests "Always" location authorization and calls completion when resolved.
     func requestAlwaysPermission(completion: @escaping (Bool) -> Void) {
         let status = manager.authorizationStatus
-        LOG("requestAlwaysPermission() - current status=\(status.rawValue)")
-        
         switch status {
         case .authorizedAlways:
-            LOG("  Already authorized (Always)")
-            startLocationUpdates()
+            hasPermission = true
+            // Don't start yet - wait for first BLE connection
             completion(true)
-        case .authorizedWhenInUse:
-            LOG("  WhenInUse granted, requesting upgrade to Always")
-            // Upgrade to Always
-            permissionCompletion = completion
-            manager.requestAlwaysAuthorization()
-        case .notDetermined:
-            LOG("  Not determined, requesting Always authorization")
+        case .authorizedWhenInUse, .notDetermined:
             permissionCompletion = completion
             manager.requestAlwaysAuthorization()
         default:
-            LOG("  ERROR: Permission denied or restricted")
-            // denied / restricted
+            LOG_ERROR("[LocationReporter] Permission denied")
             completion(false)
         }
     }
 
     func stop() {
-        LOG("LocationReporter.stop() - stopping location updates")
+        isTracking = false
+        hasPermission = false
         manager.stopUpdatingLocation()
+        LOG("[LocationReporter] Stopped")
     }
 
     // ── CLLocationManagerDelegate ─────────────────────────────────────────
 
-    func locationManager(_ manager: CLLocationManager,
-                         didChangeAuthorization status: CLAuthorizationStatus) {
-        let statusNames = ["notDetermined", "restricted", "denied", "authorizedAlways", "authorizedWhenInUse"]
-        let statusName = status.rawValue < statusNames.count ? statusNames[Int(status.rawValue)] : "unknown"
-        LOG("didChangeAuthorization: \(statusName) (rawValue=\(status.rawValue))")
-        
+    func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
         switch status {
         case .authorizedAlways:
-            LOG("  Authorization GRANTED (Always)")
-            startLocationUpdates()
+            LOG("[LocationReporter] Auth: Always granted")
+            hasPermission = true
+            // Don't start yet - wait for first BLE connection
             permissionCompletion?(true)
             permissionCompletion = nil
         case .denied, .restricted:
-            LOG("  Authorization DENIED/RESTRICTED")
+            LOG_ERROR("[LocationReporter] Auth: Denied")
             permissionCompletion?(false)
             permissionCompletion = nil
         default:
-            LOG("  Authorization status changed but not actionable yet")
             break
         }
     }
 
-    func locationManager(_ manager: CLLocationManager,
-                         didUpdateLocations locations: [CLLocation]) {
-        lastLocation = locations.last
-        locationUpdateCount += 1
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let location = locations.last else { return }
+        lastLocation = location
         
-        // Log every 10th update to avoid spam
-        if locationUpdateCount % 10 == 1 {
-            if let loc = lastLocation {
-                LOG("didUpdateLocations (#\(locationUpdateCount)): lat=\(loc.coordinate.latitude), lng=\(loc.coordinate.longitude), accuracy=\(loc.horizontalAccuracy)m")
-            }
+        // Throttle based on interval
+        let elapsed = Date().timeIntervalSince(lastReportTime)
+        if elapsed >= minReportInterval {
+            lastReportTime = Date()
+            LOG("[LocationReporter] Location: (\(String(format: "%.5f", location.coordinate.latitude)), \(String(format: "%.5f", location.coordinate.longitude))) acc=\(Int(location.horizontalAccuracy))m")
+            onLocationUpdate?(location)
         }
     }
 
-    func locationManager(_ manager: CLLocationManager,
-                         didFailWithError error: Error) {
-        guard let err = error as? CLError else {
-            LOG("didFailWithError: unknown error - \(error.localizedDescription)")
-            return
-        }
-        
-        switch err.code {
-        case .denied:
-            LOG("didFailWithError: DENIED - permission revoked at runtime")
-            // Permission revoked at runtime
-            manager.stopUpdatingLocation()
-        case .locationUnknown:
-            LOG("didFailWithError: locationUnknown - GPS not available yet (normal on startup/simulator)")
-            // Temporary failure - GPS not available yet, do nothing and wait
-            // This is common on simulator or when device just started
-            break
-        default:
-            LOG("didFailWithError: \(err.code.rawValue) - \(err.localizedDescription)")
-        }
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        if let err = error as? CLError, err.code == .locationUnknown { return }
+        LOG_ERROR("[LocationReporter] Error: \(error.localizedDescription)")
     }
 }

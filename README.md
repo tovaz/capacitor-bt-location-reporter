@@ -57,6 +57,57 @@ Add the following to your app's `ios/App/App/Info.plist`:
 
 ---
 
+
+
+## BtLocationReporter.start: Full Configuration
+
+The `start` method receives a configuration object with the following fields:
+
+| Field               | Type                        | Required | Description                                                                                 | Default |
+|---------------------|-----------------------------|----------|---------------------------------------------------------------------------------------------|---------|
+| devices             | `BtDeviceEntry[]`           | Yes      | List of BLE devices to monitor.                                                             |         |
+| reportEndpoint      | `string`                    | Yes      | HTTPS URL that will receive the POST location payload.                                      |         |
+| authToken           | `string`                    | No       | Authorization token sent with every POST request.                                           |         |
+| reportIntervalMs    | `number`                    | No       | Interval between location reports in milliseconds.                                          | 30000   |
+| debug               | `boolean`                   | No       | Enables debug logging to file and console.                                                  | false   |
+| texts               | `NotificationTexts`         | No       | Customizable notification texts (see below).                                                |         |
+| extraPayloadFields  | `Record<string, unknown>`   | No       | Additional fields merged into every POST payload.                                           |         |
+
+**NotificationTexts:**
+
+| Field           | Type     | Description                                                                                  | Default |
+|-----------------|----------|----------------------------------------------------------------------------------------------|---------|
+| connectedHeader | string   | Title for BLE connection notification.                                                        | "Device connected" |
+| connected       | string   | Body for BLE connection notification. Use `{device}` as placeholder.                         | "{device} connected via Bluetooth, power saving activated" |
+| trackerHeader   | string   | Title for foreground service notification.                                                    | "BT Location Reporter" |
+| tracker         | string   | Body for foreground service notification.                                                    | "Tracking location in background…" |
+
+### Extended Example
+
+```typescript
+import { BtLocationReporter } from '@tovaz/capacitor-bt-location-reporter';
+
+await BtLocationReporter.start({
+  devices: [
+    { bleDeviceId: 'AA:BB:CC:DD:EE:FF', pajDeviceId: 12345 },
+    { bleDeviceId: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', pajDeviceId: 67890 },
+  ],
+  reportEndpoint: 'https://api.example.com/v1/bt-location',
+  authToken: 'Bearer eyJhbGci...',
+  reportIntervalMs: 60000, // 1 minute
+  debug: true,
+  texts: {
+    connectedHeader: 'Tracker connected!',
+    connected: '{device} is ready for tracking',
+    trackerHeader: 'My Tracking App',
+    tracker: 'Location active in background…',
+  },
+  extraPayloadFields: { customerId: 42, customFlag: true },
+});
+```
+
+---
+
 ## Usage (TypeScript / Angular)
 
 ```typescript
@@ -74,8 +125,13 @@ await BtLocationReporter.start({
   reportEndpoint:   'https://api.example.com/v1/bt-location',
   authToken:        'Bearer eyJhbGci...',
   reportIntervalMs: 30_000,                  // default: 30 s
-  notificationTitle: 'PAJ Tracker',          // Android only
-  notificationText:  'Monitoring your PAJ device…',
+  debug: false, // default: false (logs to file and console if true)
+  texts: {
+    trackerHeader: 'PAJ Tracker',            // Foreground notification title
+    tracker: 'Monitoring your PAJ device…',  // Foreground notification body
+    connected: 'Bluetooth device connected.', // BLE connection notification body
+    connectedHeader: 'PAJ bluetooth'          // BLE connection notification title
+  },
   extraPayloadFields: { customerId: 42 },
 });
 
@@ -108,6 +164,7 @@ await BtLocationReporter.stop();
 await BtLocationReporter.removeAllListeners();
 ```
 
+
 ### Payload sent to the endpoint
 
 Only PAJ device IDs of **currently connected** BLE devices are included.
@@ -122,6 +179,69 @@ Only PAJ device IDs of **currently connected** BLE devices are included.
   "customerId": 42
 }
 ```
+---
+
+## Advanced: Internals & Utilities
+
+### FileLogger
+
+**Android:** `android/src/main/java/com/paj/btlocationreporter/FileLogger.kt`
+
+**iOS:** `ios/Plugin/FileLogger.swift`
+
+Dual logger for debugging the plugin:
+
+- **Console:** Standard Android Logcat or iOS Unified Logging (Xcode/Console.app)
+- **File:** Writes to a persistent log file on the device for later inspection
+
+Enable debug logging by setting `debug: true` in the config. You can retrieve the log file path and contents using:
+
+```typescript
+await BtLocationReporter.getLogPath(); // { path: string }
+await BtLocationReporter.getLogs();    // { logs: string }
+```
+
+**Android log file path:** `/data/data/{package}/files/bt-location-reporter.log`
+
+**iOS log file path:** `Documents/bt-location-reporter.log` (inside app sandbox)
+
+---
+
+### GpsSwitcher
+
+**Android:** `android/src/main/java/com/paj/btlocationreporter/GpsSwitcher.kt`
+
+**iOS:** `ios/Plugin/GpsSwitcher.swift`
+
+Manages GPS switch commands for BLE devices:
+
+- When a device connects: sends the `onConnectCommand` (e.g., GPS_OFF) to the device via BLE GATT
+- When a device disconnects or location fails: sends the `onDisconnectCommand` (e.g., GPS_ON) to the device
+
+You can specify these commands per device in the `devices` array:
+
+```typescript
+devices: [
+  {
+    bleDeviceId: 'AA:BB:CC:DD:EE:FF',
+    pajDeviceId: 12345,
+    onConnectCommand: {
+      name: 'GPS_OFF',
+      serviceUuid: '0000xxxx-0000-1000-8000-00805f9b34fb',
+      characteristicUuid: '0000yyyy-0000-1000-8000-00805f9b34fb',
+      value: '0'
+    },
+    onDisconnectCommand: {
+      name: 'GPS_ON',
+      serviceUuid: '0000xxxx-0000-1000-8000-00805f9b34fb',
+      characteristicUuid: '0000yyyy-0000-1000-8000-00805f9b34fb',
+      value: '1'
+    }
+  }
+]
+```
+
+---
 
 ---
 
@@ -147,8 +267,10 @@ async start(): Promise<void> {
     reportEndpoint:   environment.btLocationEndpoint,
     authToken:        `Bearer ${this.authToken}`,
     reportIntervalMs: 30_000,
-    notificationTitle: 'PAJ Tracker',
-    notificationText:  'Monitoring your PAJ device in background…',
+    texts: {
+      trackerHeader: 'PAJ Tracker',
+      tracker: 'Monitoring your PAJ device in background…',
+    },
   });
 }
 ```
