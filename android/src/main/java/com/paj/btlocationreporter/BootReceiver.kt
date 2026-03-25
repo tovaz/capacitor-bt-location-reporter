@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import com.paj.btlocationreporter.ConfigStore
 
 /**
  * Receives BOOT_COMPLETED so the service can restart automatically
@@ -18,25 +19,13 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
 
-        val prefs = context.getSharedPreferences("bt_location_reporter", Context.MODE_PRIVATE)
-        val wasRunning = prefs.getBoolean("was_running", false)
-        if (!wasRunning) return
-
-        Log.i("BtLocationReporter", "Device rebooted — restarting background service")
-
+        val configJson = ConfigStore.getConfig(context)
+        if (configJson.isNullOrBlank()) return
+        Log.i("BtLocationReporter", "Device rebooted — restarting background service with persisted config")
         val serviceIntent = Intent(context, BtLocationReporterService::class.java).apply {
             action = BtLocationReporterService.ACTION_START
-            putStringArrayListExtra(
-                BtLocationReporterService.EXTRA_DEVICE_IDS,
-                ArrayList(prefs.getStringSet("device_ids", emptySet()) ?: emptySet())
-            )
-            putExtra(BtLocationReporterService.EXTRA_ENDPOINT,    prefs.getString("endpoint", ""))
-            putExtra(BtLocationReporterService.EXTRA_AUTH_TOKEN,  prefs.getString("auth_token", ""))
-            putExtra(BtLocationReporterService.EXTRA_INTERVAL_MS, prefs.getLong("interval_ms", 30_000L))
-            putExtra(BtLocationReporterService.EXTRA_NOTIF_TITLE, prefs.getString("notif_title", "BT Location Reporter"))
-            putExtra(BtLocationReporterService.EXTRA_NOTIF_TEXT,  prefs.getString("notif_text", "Tracking location in background…"))
+            putExtra("config_json", configJson)
         }
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(serviceIntent)
         } else {

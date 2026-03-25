@@ -59,9 +59,9 @@ class BleConnectionManager(
     private fun handleBluetoothOff() {
         // Clear all connections
         connectedIds.clear()
-        gattMap.values.forEach { it.close() }
+        //gattMap.values.forEach { it.close() }
         gattMap.clear()
-        onBluetoothOff?.invoke()
+        //onBluetoothOff?.invoke()
     }
 
     // ── Public API ────────────────────────────────────────────────────────
@@ -108,6 +108,11 @@ class BleConnectionManager(
     @Suppress("unused")
     fun getGatt(deviceId: String): BluetoothGatt? = gattMap[deviceId]
 
+    /**
+     * Current list of target device IDs (to connect/reconnect). 
+     */
+    fun getTargetIds(): List<String> = targetIds.toList()
+
     // ── Connection logic ──────────────────────────────────────────────────
 
     private fun connectDevice(deviceId: String) {
@@ -144,6 +149,7 @@ class BleConnectionManager(
     private fun buildGattCallback(deviceId: String) = object : BluetoothGattCallback() {
 
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            LOG("[BleConnectionManager] onConnection State Change -> ${newState}")
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     LOG("[BleConnectionManager] Connected: ${gatt.device?.name ?: deviceId}")
@@ -160,7 +166,8 @@ class BleConnectionManager(
                     connectedIds.remove(deviceId)
                     val cachedGatt = gattMap.remove(deviceId)
                     onDisconnected(deviceId, cachedGatt ?: gatt)
-                    gatt.close()
+                    runCatching { gatt.disconnect() }
+                    runCatching { gatt.close() }
                     scheduleReconnect(deviceId)
                 }
             }

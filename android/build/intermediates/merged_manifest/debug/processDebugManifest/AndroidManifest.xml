@@ -39,6 +39,12 @@
 
     <application>
 
+        <!-- BLE scan match receiver -->
+        <receiver
+            android:name="com.paj.btlocationreporter.BleScanReceiver"
+            android:enabled="true"
+            android:exported="true" />
+
         <!-- Foreground service that manages BLE + GPS + HTTP in background -->
         <service
             android:name="com.paj.btlocationreporter.BtLocationReporterService"

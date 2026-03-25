@@ -30,7 +30,12 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application>
-
+        <!-- BLE scan match receiver -->
+        <receiver
+            android:name="com.paj.btlocationreporter.BleScanReceiver"
+            android:enabled="true"
+            android:exported="true" />
+            
         <!-- Foreground service that manages BLE + GPS + HTTP in background -->
         <service
             android:name=".BtLocationReporterService"

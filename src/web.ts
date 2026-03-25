@@ -40,4 +40,14 @@ export class BtLocationReporterWeb
   async getLogs(): Promise<{ logs: string }> {
     return { logs: 'Logging not available on web' };
   }
+
+  async requestLocationPermission(): Promise<{ granted: boolean }> {
+    this.warn();
+    return { granted: false };
+  }
+
+  async hasLocationPermission(): Promise<{ granted: boolean }> {
+    this.warn();
+    return { granted: false };
+  }
 }

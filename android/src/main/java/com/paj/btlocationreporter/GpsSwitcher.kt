@@ -54,6 +54,7 @@ class GpsSwitcher {
      * Register commands for a device.
      */
     fun registerDevice(deviceId: String, onConnect: BleCommand?, onDisconnect: BleCommand?) {
+        FileLogger.log("GpsSwitcher", "registerDevice: $deviceId onConnect=${onConnect?.name} onDisconnect=${onDisconnect?.name}")
         onConnect?.let { gpsOffCommands[deviceId] = it }
         onDisconnect?.let { gpsOnCommands[deviceId] = it }
     }
@@ -62,6 +63,7 @@ class GpsSwitcher {
      * Unregister a device.
      */
     fun unregisterDevice(deviceId: String) {
+        FileLogger.log("GpsSwitcher", "unregisterDevice: $deviceId")
         gpsOffCommands.remove(deviceId)
         gpsOnCommands.remove(deviceId)
         gattMap.remove(deviceId)
@@ -73,11 +75,23 @@ class GpsSwitcher {
      * Called when a BLE device connects - sends GPS_OFF command after delay.
      */
     fun onDeviceConnected(deviceId: String, gatt: BluetoothGatt) {
+        FileLogger.log("GpsSwitcher", "onDeviceConnected: $deviceId")
         gattMap[deviceId] = gatt
 
-        val command = gpsOffCommands[deviceId] ?: return
+        val offList = gpsOffCommands.entries.joinToString { "${it.key}=${it.value.name}" }
+        val onList = gpsOnCommands.entries.joinToString { "${it.key}=${it.value.name}" }
+        // FileLogger.log("GpsSwitcher", "gpsOffCommands: [$offList]")
+        // FileLogger.log("GpsSwitcher", "gpsOnCommands: [$onList]")
+        // FileLogger.info("GpsSwitcher", "Id: $deviceId")
+
+        val command = gpsOffCommands[deviceId]
+        if (command == null) {
+            FileLogger.log("GpsSwitcher", "onDeviceConnected: No GPS_OFF command for $deviceId")
+            return
+        }
 
         handler.postDelayed({
+            FileLogger.log("GpsSwitcher", "onDeviceConnected: Sending GPS_OFF command to $deviceId after delay")
             sendCommand(deviceId, command)
         }, commandDelayMs)
     }
@@ -86,15 +100,18 @@ class GpsSwitcher {
      * Called when a BLE device disconnects - sends GPS_ON command.
      */
     fun onDeviceDisconnected(deviceId: String, gatt: BluetoothGatt) {
+        FileLogger.log("GpsSwitcher", "onDeviceDisconnected: $deviceId")
         val command = gpsOnCommands[deviceId]
         if (command == null) {
+            FileLogger.log("GpsSwitcher", "onDeviceDisconnected: No GPS_ON command for $deviceId")
             gattMap.remove(deviceId)
-            characteristics.remove(deviceId)
+            // characteristics.remove(deviceId)
             return
         }
 
         // Try to send GPS_ON (may fail if already disconnected)
         handler.postDelayed({
+            FileLogger.log("GpsSwitcher", "onDeviceDisconnected: Sending GPS_ON command to $deviceId after delay")
             sendCommand(deviceId, command)
         }, commandDelayMs)
     }
@@ -103,8 +120,13 @@ class GpsSwitcher {
      * Called when location report fails - sends GPS_ON to all connected devices.
      */
     fun onLocationReportFailed(connectedDeviceIds: List<String>) {
+        FileLogger.log("GpsSwitcher", "onLocationReportFailed: ${connectedDeviceIds.joinToString()}")
         for (deviceId in connectedDeviceIds) {
-            val command = gpsOnCommands[deviceId] ?: continue
+            val command = gpsOnCommands[deviceId]
+            if (command == null) {
+                FileLogger.log("GpsSwitcher", "onLocationReportFailed: No GPS_ON command for $deviceId")
+                continue
+            }
             sendCommand(deviceId, command)
         }
     }
@@ -113,24 +135,32 @@ class GpsSwitcher {
      * Handle services discovered callback from BleConnectionManager.
      */
     fun onServicesDiscovered(deviceId: String, gatt: BluetoothGatt, status: Int) {
+        FileLogger.log("GpsSwitcher", "onServicesDiscovered: $deviceId status=$status")
         if (status != BluetoothGatt.GATT_SUCCESS) {
+            FileLogger.error("GpsSwitcher", "onServicesDiscovered: GATT error for $deviceId status=$status")
             pendingCommands.remove(deviceId)
             return
         }
 
-        val command = pendingCommands[deviceId] ?: return
+        val command = pendingCommands[deviceId]
+        if (command == null) {
+            FileLogger.log("GpsSwitcher", "onServicesDiscovered: No pending command for $deviceId")
+            return
+        }
 
         val targetServiceUuid = UUID.fromString(command.serviceUuid)
         val targetCharUuid = UUID.fromString(command.characteristicUuid)
 
         val service = gatt.getService(targetServiceUuid)
         if (service == null) {
+            FileLogger.error("GpsSwitcher", "onServicesDiscovered: Service not found for $deviceId serviceUuid=${command.serviceUuid}")
             pendingCommands.remove(deviceId)
             return
         }
 
         val characteristic = service.getCharacteristic(targetCharUuid)
         if (characteristic == null) {
+            FileLogger.error("GpsSwitcher", "onServicesDiscovered: Characteristic not found for $deviceId charUuid=${command.characteristicUuid}")
             pendingCommands.remove(deviceId)
             return
         }
@@ -146,8 +176,9 @@ class GpsSwitcher {
      * Cleanup all state.
      */
     fun cleanup() {
+        FileLogger.log("GpsSwitcher", "cleanup() called")
         gpsOffCommands.clear()
-        gpsOnCommands.clear()
+        gpsOnCommands.clear() // Not necesary to clear this list.
         gattMap.clear()
         characteristics.clear()
         pendingCommands.clear()
@@ -156,7 +187,13 @@ class GpsSwitcher {
     // ── Private: GATT Write ───────────────────────────────────────────────
 
     private fun sendCommand(deviceId: String, command: BleCommand) {
-        val gatt = gattMap[deviceId] ?: return
+        FileLogger.log("GpsSwitcher", "sendCommand: $deviceId command=${command.name}")
+        // FileLogger.info("GpsSwitcher", "Command: $command")
+        val gatt = gattMap[deviceId]
+        if (gatt == null) {
+            FileLogger.error("GpsSwitcher", "sendCommand: No gatt for $deviceId")
+            return
+        }
 
         val charUuid = UUID.fromString(command.characteristicUuid)
 
@@ -165,8 +202,10 @@ class GpsSwitcher {
         val cachedChar = deviceChars?.get(charUuid)
 
         if (cachedChar != null) {
+            FileLogger.log("GpsSwitcher", "sendCommand: Using cached characteristic for $deviceId")
             writeToCharacteristic(gatt, cachedChar, command)
         } else {
+            FileLogger.log("GpsSwitcher", "sendCommand: Discovering services for $deviceId")
             // Need to discover services first
             pendingCommands[deviceId] = command
             gatt.discoverServices()
@@ -191,7 +230,7 @@ class GpsSwitcher {
 
         val success = gatt.writeCharacteristic(characteristic)
         if (success) {
-            FileLogger.log("GpsSwitcher", "Command Sent: ${command.name}")
+            FileLogger.info("GpsSwitcher", "Command Sent: ${command.name}")
         } else {
             FileLogger.error("GpsSwitcher", "Failed to send: ${command.name}")
         }

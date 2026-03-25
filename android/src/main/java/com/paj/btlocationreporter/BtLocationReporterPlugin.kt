@@ -13,6 +13,9 @@ import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
+
+import com.paj.btlocationreporter.LinkedDeviceStore
+import com.paj.btlocationreporter.ConfigStore
 import org.json.JSONObject
 
 private const val LOCATION_PERMISSION_REQUEST_CODE = 12345
@@ -61,9 +64,10 @@ class BtLocationReporterPlugin : Plugin() {
             call.reject("reportEndpoint is required"); return
         }
 
-        val bleIds = (0 until devicesArray.length()).mapNotNull { i ->
-            runCatching { devicesArray.getJSONObject(i).getString("bleDeviceId") }.getOrNull()
-        }
+        // Guardar la configuración completa como JSON
+        val configJson = call.data.toString()
+        ConfigStore.saveConfig(context, configJson)
+        // (Opcional: mantener LinkedDeviceStore para compatibilidad, pero ya no es necesario)
         
         // Parse debug mode
         val debug = call.getBoolean("debug") ?: false
@@ -76,7 +80,15 @@ class BtLocationReporterPlugin : Plugin() {
         val textTrackerHeader = textsObj?.getString("trackerHeader") ?: "BT Location Reporter"
         val textTracker = textsObj?.getString("tracker") ?: "Tracking location in background\u2026"
 
+        // Obtener lista de bleIds
+        val bleIds = (0 until devicesArray.length()).mapNotNull { i ->
+            runCatching { devicesArray.getJSONObject(i).getString("bleDeviceId") }.getOrNull()
+        }
+
         LOG("[BtLocationReporterPlugin] Config: endpoint=$endpoint, devices=${bleIds.size}, debug=$debug")
+
+        // Persist linked device IDs for BLE scan + PendingIntent in background
+        LinkedDeviceStore.saveLinkedDevices(context, bleIds.toSet())
 
         // Only check Bluetooth permissions at start - location will be requested when first BLE connects
         if (!checkBluetoothPermissionsGranted()) {
@@ -96,7 +108,8 @@ class BtLocationReporterPlugin : Plugin() {
             extraJson   = call.getObject("extraPayloadFields")?.toString() ?: "{}",
             debug       = debug,
             textConnectedHeader = textConnectedHeader,
-            textConnected = textConnected
+            textConnected = textConnected,
+            configJson = configJson
         )
         LOG_INFO("[BtLocationReporterPlugin] start() completed")
         call.resolve()
@@ -109,6 +122,9 @@ class BtLocationReporterPlugin : Plugin() {
             action = BtLocationReporterService.ACTION_STOP
         }
         context.stopService(intent)
+        // Borrar configuración persistente
+        ConfigStore.clearConfig(context)
+        LinkedDeviceStore.clearLinkedDevices(context)
         call.resolve()
     }
 
@@ -143,6 +159,12 @@ class BtLocationReporterPlugin : Plugin() {
         
         LOG("[BtLocationReporterPlugin] addDevices(): ${entries.size} devices")
         BtLocationReporterService.pendingCommand = BtLocationReporterService.Command.AddDevices(entries, commands)
+
+        // Also update linked-device store for BLE background scanning
+        val current = LinkedDeviceStore.getLinkedDevices(context).toMutableSet()
+        current.addAll(entries.keys)
+        LinkedDeviceStore.saveLinkedDevices(context, current)
+
         call.resolve()
     }
 
@@ -156,6 +178,16 @@ class BtLocationReporterPlugin : Plugin() {
         }
         LOG("[BtLocationReporterPlugin] removeDevices(): ${bleIds.size} devices")
         BtLocationReporterService.pendingCommand = BtLocationReporterService.Command.RemoveDevices(bleIds)
+
+        // Also update linked-device store for BLE background scanning
+        val current = LinkedDeviceStore.getLinkedDevices(context).toMutableSet()
+        current.removeAll(bleIds)
+        if (current.isEmpty()) {
+            LinkedDeviceStore.clearLinkedDevices(context)
+        } else {
+            LinkedDeviceStore.saveLinkedDevices(context, current)
+        }
+
         call.resolve()
     }
 
@@ -267,6 +299,7 @@ class BtLocationReporterPlugin : Plugin() {
         debug: Boolean,
         textConnectedHeader: String,
         textConnected: String,
+        configJson: String,
     ) {
         val intent = Intent(context, BtLocationReporterService::class.java).apply {
             action = BtLocationReporterService.ACTION_START
@@ -281,11 +314,14 @@ class BtLocationReporterPlugin : Plugin() {
             putExtra(BtLocationReporterService.EXTRA_DEBUG, debug)
             putExtra(BtLocationReporterService.EXTRA_TEXT_CONNECTED_HEADER, textConnectedHeader)
             putExtra(BtLocationReporterService.EXTRA_TEXT_CONNECTED, textConnected)
+            putExtra("config_json", configJson)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            LOG("[BtLocationReporterPlugin] launchService: startForegroundService")
             context.startForegroundService(intent)
         } else {
+            LOG("[BtLocationReporterPlugin] launchService: startService")
             context.startService(intent)
         }
     }

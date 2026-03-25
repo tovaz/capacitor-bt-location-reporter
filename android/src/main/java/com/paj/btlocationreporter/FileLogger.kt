@@ -43,16 +43,24 @@ object FileLogger {
     /**
      * Log a message with class name prefix. Only logs if debugEnabled is true.
      */
-    fun log(className: String, message: String) {
+    fun log(className: String, message: String?) {
         if (!debugEnabled) return
-        
-        val prefix = "[BTLR - $className]"
+
+        // Obtener archivo y línea desde el stacktrace
+        val stack = Throwable().stackTrace
+        // Buscar el primer frame fuera de FileLogger
+        val frame = stack.firstOrNull { !it.className.contains("FileLogger") } ?: stack.firstOrNull()
+        val file = frame?.fileName ?: "?"
+        val line = frame?.lineNumber ?: -1
+
+        val prefix = "[BTLR - $file]"
         val timestamp = dateFormatter.format(Date())
-        val logMessage = "$prefix [$timestamp] $message"
-        
+        val safeMsg = message?.toString() ?: "null"
+        val logMessage = "$prefix [$timestamp] Line $line: $safeMsg"
+
         // 1. Log to Logcat
-        Log.d(TAG, "$prefix $message")
-        
+        Log.d(TAG, logMessage)
+
         // 2. Write to file
         writeToFile("$logMessage\n")
     }

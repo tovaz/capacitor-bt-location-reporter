@@ -89,6 +89,9 @@ class BtLocationReporter: NSObject {
         
         LOG("[BtLocationReporter] Starting: \(config.devices.count) devices, interval=\(config.intervalMs)ms, debug=\(config.debug)")
 
+        // Show local notification about monitoring started
+        showMonitoringStartedNotification()
+
         // 1. Setup location manager with callback (but don't request permission yet)
         locationMgr = LocationReporter()
         locationMgr?.setReportInterval(ms: config.intervalMs)
@@ -189,7 +192,7 @@ class BtLocationReporter: NSObject {
     // ── BLE handlers ──────────────────────────────────────────────────────
 
     private func handleBleConnected(_ deviceId: String, peripheral: CBPeripheral) {
-        let wasEmpty = (bleManager?.connectedIds.count ?? 0) == 1  // Just became 1 (this device)
+        let wasEmpty = true; //(bleManager?.connectedIds.count ?? 0) == 1  // Just became 1 (this device)
         
         LOG("[BtLocationReporter] BLE connected: \(deviceId)")
         gpsSwitcher?.onDeviceConnected(bleDeviceId: deviceId, peripheral: peripheral)
@@ -323,6 +326,34 @@ class BtLocationReporter: NSObject {
                     LOG_ERROR("[BtLocationReporter] Failed to show notification: \(error.localizedDescription)")
                 } else {
                     LOG("[BtLocationReporter] Showed BLE connection notification for: \(displayName)")
+                }
+            }
+        }
+    }
+
+    // Show notification when monitoring starts
+    private func showMonitoringStartedNotification() {
+        let center = UNUserNotificationCenter.current()
+        let texts = config?.texts ?? NotificationTexts.defaults
+        center.getNotificationSettings { settings in
+            guard settings.authorizationStatus == .authorized else {
+                LOG("[BtLocationReporter] No notification permission, skipping monitoring started notification")
+                return
+            }
+            let content = UNMutableNotificationContent()
+            content.title = texts.trackerHeader
+            content.body = texts.tracker
+            content.sound = .default
+            let request = UNNotificationRequest(
+                identifier: "bt_monitoring_started",
+                content: content,
+                trigger: nil
+            )
+            center.add(request) { error in
+                if let error = error {
+                    LOG_ERROR("[BtLocationReporter] Failed to show monitoring started notification: \(error.localizedDescription)")
+                } else {
+                    LOG("[BtLocationReporter] Showed monitoring started notification")
                 }
             }
         }

@@ -7,12 +7,15 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.bluetooth.BluetoothGatt
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.Intent
 import android.location.Location
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
+import org.json.JSONObject
 import androidx.core.app.NotificationCompat
 import com.getcapacitor.JSObject
 import com.google.android.gms.location.*
@@ -20,7 +23,7 @@ import kotlinx.coroutines.*
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
+
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
@@ -34,6 +37,11 @@ import java.util.concurrent.TimeUnit
  */
 class BtLocationReporterService : Service() {
 
+
+    init {
+        LOG("[BtLocationReporterService] Constructor called")
+    }
+    
     // ── Companion / constants ─────────────────────────────────────────────
 
     companion object {
@@ -119,46 +127,159 @@ class BtLocationReporterService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> { shutdown(); return START_NOT_STICKY }
-            ACTION_START -> handleStart(intent)
+        LOG("[BtLocationReporterService] onStartCommand: startId=$startId action=${intent?.action} intentPresent=${intent != null}")
+
+        if (intent?.action == ACTION_STOP) {
+            LOG("[BtLocationReporterService] onStartCommand: ACTION_STOP received")
+            shutdown(); return START_NOT_STICKY
         }
-        return START_STICKY
+
+        try {
+            // Prioridad 1: explicit config payload in intent (wake-up via receiver/boot)
+            val intentConfigJson = intent?.getStringExtra("config_json")
+            if (!intentConfigJson.isNullOrBlank()) {
+                LOG("[BtLocationReporterService] onStartCommand: config_json received in intent -> handleStartFromConfig")
+                handleStartFromConfig(intentConfigJson)
+                return START_STICKY
+            }
+
+            // Prioridad 2: explicit start intent from plugin
+            if (intent?.action == ACTION_START) {
+                LOG("[BtLocationReporterService] onStartCommand: ACTION_START received -> handleStart")
+                handleStart(intent)
+                return START_STICKY
+            }
+
+            // Prioridad 3: persisted config fallback from shared preferences
+            val persistedConfigJson = ConfigStore.getConfig(this)
+            if (!persistedConfigJson.isNullOrBlank()) {
+                LOG("[BtLocationReporterService] onStartCommand: persisted config found -> handleStartFromConfig")
+                handleStartFromConfig(persistedConfigJson)
+                return START_STICKY
+            }
+
+            // Nada válido para iniciar
+            LOG_ERROR("[BtLocationReporterService] onStartCommand: no config found and no ACTION_START -> stopping")
+            stopSelf()
+            return START_NOT_STICKY
+
+        } catch (ex: Exception) {
+            LOG_ERROR("[BtLocationReporterService] onStartCommand error: ${ex.message}")
+            ex.printStackTrace()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+    }
+
+    private fun handleStartFromConfig(configJson: String) {
+        if (configJson.isBlank()) {
+            LOG_ERROR("[BtLocationReporterService] handleStartFromConfig: empty config")
+            return
+        }
+
+        val config = JSONObject(configJson)
+        val devicesArray = config.optJSONArray("devices") ?: org.json.JSONArray()
+        val endpoint = config.optString("reportEndpoint", "")
+        val authToken = config.optString("authToken", "")
+        val intervalMs = config.optLong("reportIntervalMs", 30_000L)
+
+        val textsObj = config.optJSONObject("texts")
+        val notifTitle = textsObj?.optString("trackerHeader") ?: "BT Location Reporter"
+        val notifText = textsObj?.optString("tracker") ?: "Tracking location in background…"
+        val textConnectedHeader = textsObj?.optString("connectedHeader") ?: "Device connected"
+        val textConnected = textsObj?.optString("connected") ?: "{device} connected via Bluetooth, power saving activated"
+
+        val ids = ArrayList<String>()
+        for (i in 0 until devicesArray.length()) {
+            val obj = devicesArray.getJSONObject(i)
+            val bleId = obj.optString("bleDeviceId")
+            if (bleId.isNotEmpty()) ids.add(bleId)
+        }
+
+        val normalizedIntent = Intent(this, BtLocationReporterService::class.java).apply {
+            action = ACTION_START
+            putStringArrayListExtra(EXTRA_DEVICE_IDS, ids)
+            putExtra(EXTRA_DEVICES_JSON, devicesArray.toString())
+            putExtra(EXTRA_ENDPOINT, endpoint)
+            putExtra(EXTRA_AUTH_TOKEN, authToken)
+            putExtra(EXTRA_INTERVAL_MS, intervalMs)
+            putExtra(EXTRA_NOTIF_TITLE, notifTitle)
+            putExtra(EXTRA_NOTIF_TEXT, notifText)
+            putExtra(EXTRA_TEXT_CONNECTED_HEADER, textConnectedHeader)
+            putExtra(EXTRA_TEXT_CONNECTED, textConnected)
+            putExtra(EXTRA_EXTRA_JSON, config.optString("extraJson", "{}"))
+            putExtra(EXTRA_DEBUG, config.optBoolean("debug", false))
+        }
+
+        handleStart(normalizedIntent)
     }
 
     private fun handleStart(intent: Intent) {
-        if (isRunning) return
+        val ids    = intent.getStringArrayListExtra(EXTRA_DEVICE_IDS) ?: arrayListOf()
+        val devicesJson = intent.getStringExtra(EXTRA_DEVICES_JSON) ?: "[]"
+
+        if (isRunning) {
+            LOG("[BtLocationReporterService] handleStart called while running; updating config and device set")
+
+            // Update local config values (in case changed by new start call)
+            endpoint   = intent.getStringExtra(EXTRA_ENDPOINT)    ?: endpoint
+            authToken  = intent.getStringExtra(EXTRA_AUTH_TOKEN)  ?: authToken
+            intervalMs = intent.getLongExtra(EXTRA_INTERVAL_MS, intervalMs)
+            extraJson  = intent.getStringExtra(EXTRA_EXTRA_JSON)  ?: extraJson
+            textConnectedHeader = intent.getStringExtra(EXTRA_TEXT_CONNECTED_HEADER) ?: textConnectedHeader
+            textConnected = intent.getStringExtra(EXTRA_TEXT_CONNECTED) ?: textConnected
+
+            LinkedDeviceStore.saveLinkedDevices(this, ids.toSet())
+
+            if (::bleManager.isInitialized) {
+                val existingIds = bleManager.getTargetIds().toSet()
+                val toAdd = ids.filter { it !in existingIds }
+                val toRemove = existingIds.filter { it !in ids }
+                if (toAdd.isNotEmpty()) bleManager.addDevices(toAdd)
+                if (toRemove.isNotEmpty()) bleManager.removeDevices(toRemove)
+            }
+
+            parseDevicesAndCommands(devicesJson)
+            startBleScanWithPendingIntent()
+            return
+        }
+
         isRunning = true
         serviceInstance = this
 
+        // 1. Inicialización de parámetros
         endpoint   = intent.getStringExtra(EXTRA_ENDPOINT)    ?: ""
         authToken  = intent.getStringExtra(EXTRA_AUTH_TOKEN)  ?: ""
         intervalMs = intent.getLongExtra(EXTRA_INTERVAL_MS, 30_000L)
         extraJson  = intent.getStringExtra(EXTRA_EXTRA_JSON)  ?: "{}"
         val title  = intent.getStringExtra(EXTRA_NOTIF_TITLE) ?: "BT Location Reporter"
         val text   = intent.getStringExtra(EXTRA_NOTIF_TEXT)  ?: "Tracking location in background…"
-        val ids    = intent.getStringArrayListExtra(EXTRA_DEVICE_IDS) ?: arrayListOf()
         
         // Debug mode
         val debug = intent.getBooleanExtra(EXTRA_DEBUG, false)
         FileLogger.debugEnabled = debug
-        
+
         // Notification texts
         textConnectedHeader = intent.getStringExtra(EXTRA_TEXT_CONNECTED_HEADER) ?: "Device connected"
         textConnected = intent.getStringExtra(EXTRA_TEXT_CONNECTED) ?: "{device} connected via Bluetooth, power saving activated"
 
         LOG("[BtLocationReporterService] Starting: ${ids.size} devices, interval=${intervalMs}ms, debug=$debug")
 
-        // Parse devices JSON with commands
-        val devicesJson = intent.getStringExtra(EXTRA_DEVICES_JSON) ?: "[]"
-        parseDevicesAndCommands(devicesJson)
+        // 2. Procesador de comandos SIEMPRE antes de BLE
+        LOG("[BtLocationReporterService] Iniciando startCommandProcessor...")
+        startCommandProcessor()
 
-        startForeground(NOTIF_ID, buildNotification(title, text))
-        
-        // Initialize GPS Switcher
+        // 3. Inicializar GPS Switcher
         gpsSwitcher = GpsSwitcher()
 
-        // Initialize BLE Manager with callbacks
+        // 4. Parsear devices y comandos
+        parseDevicesAndCommands(devicesJson)
+
+        // 5. Notificación foreground
+        startForeground(NOTIF_ID, buildNotification(title, text))
+        
+        // 6. Inicializar BLE Manager SOLO después de todo lo anterior
+        LOG("[BtLocationReporterService] Inicializando BleConnectionManager...")
         bleManager = BleConnectionManager(
             context = this,
             initialIds = ids,
@@ -169,11 +290,9 @@ class BtLocationReporterService : Service() {
         )
         bleManager.start()
 
-        // Do NOT start location updates yet - wait for first BLE connection
-        // (saves battery when no devices are connected)
-        
-        // Start command processor
-        startCommandProcessor()
+        // 7. Iniciar escaneo BLE
+        LOG("[BtLocationReporterService] Iniciando BLE scan con PendingIntent...")
+        startBleScanWithPendingIntent()
 
         LOG("[BtLocationReporterService] Started successfully")
     }
@@ -190,7 +309,9 @@ class BtLocationReporterService : Service() {
                 // Parse optional commands
                 val onConnect = parseCommand(obj.optJSONObject("onConnectCommand"))
                 val onDisconnect = parseCommand(obj.optJSONObject("onDisconnectCommand"))
-                
+
+                LOG("[BtLocationReporterService] parseDevicesAndCommands: bleId=$bleId onConnect=${onConnect?.name} onDisconnect=${onDisconnect?.name}")
+
                 if (::gpsSwitcher.isInitialized) {
                     gpsSwitcher.registerDevice(bleId, onConnect, onDisconnect)
                 }
@@ -202,11 +323,18 @@ class BtLocationReporterService : Service() {
 
     private fun parseCommand(json: JSONObject?): BleCommand? {
         if (json == null) return null
+        
         return try {
+            val serviceUuid = json.optString("serviceUuid").takeIf { it.isNotBlank() }
+                ?: json.optString("service_uuid").takeIf { it.isNotBlank() }
+                ?: return null
+            val characteristicUuid = json.optString("characteristicUuid").takeIf { it.isNotBlank() }
+                ?: json.optString("characteristic_uuid").takeIf { it.isNotBlank() }
+                ?: return null
             BleCommand(
                 name = json.getString("name"),
-                serviceUuid = json.optString("serviceUuid") ?: json.optString("service_uuid") ?: return null,
-                characteristicUuid = json.optString("characteristicUuid") ?: json.optString("characteristic_uuid") ?: return null,
+                serviceUuid = serviceUuid,
+                characteristicUuid = characteristicUuid,
                 value = json.getString("value")
             )
         } catch (e: Exception) {
@@ -231,6 +359,9 @@ class BtLocationReporterService : Service() {
         if (::bleManager.isInitialized) bleManager.stop()
         if (::gpsSwitcher.isInitialized) gpsSwitcher.cleanup()
         if (::fusedClient.isInitialized) fusedClient.removeLocationUpdates(locationCallback)
+        // Detener escaneo BLE con PendingIntent
+        val scanner = (getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter?.bluetoothLeScanner
+        scanner?.stopScan(getBleScanPendingIntent())
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
         LOG("[BtLocationReporterService] Stopped")
@@ -303,13 +434,17 @@ class BtLocationReporterService : Service() {
         if (!::fusedClient.isInitialized) {
             fusedClient = LocationServices.getFusedLocationProviderClient(this)
         }
-        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10_000L)
-            .setMinUpdateIntervalMillis(5_000L)
-            .setMinUpdateDistanceMeters(10f)  // 10 meters
+        // Si intervalMs > 0, usarlo como intervalo de LocationRequest, si no, usar valores por defecto
+        val interval = if (intervalMs > 0) intervalMs else 10_000L
+        val minUpdate = if (intervalMs > 0) intervalMs / 2 else 5_000L
+        
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, interval)
+            .setMinUpdateIntervalMillis(interval)
+            .setMinUpdateDistanceMeters(10f)  // 10 metros
             .build()
         fusedClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
         isLocationTracking = true
-        LOG("[BtLocationReporterService] Location updates started")
+        LOG("[BtLocationReporterService] Location updates started (interval=${interval}ms, minUpdate=${minUpdate}ms)")
     }
 
     private fun pauseLocationUpdates() {
@@ -502,6 +637,28 @@ class BtLocationReporterService : Service() {
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
+    }
+
+    private fun startBleScanWithPendingIntent() {
+        val scanner = (getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter?.bluetoothLeScanner ?: return
+        val linked = LinkedDeviceStore.getLinkedDevices(this)
+        if (linked.isEmpty()) {
+            scanner.stopScan(getBleScanPendingIntent())
+            return
+        }
+        val filters = linked.map {
+            ScanFilter.Builder().setDeviceAddress(it).build()
+        }
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
+            .build()
+        scanner.startScan(filters, settings, getBleScanPendingIntent())
+    }
+
+    private fun getBleScanPendingIntent(): PendingIntent {
+        val intent = Intent(this, BleScanReceiver::class.java)
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+        return PendingIntent.getBroadcast(this, 0, intent, flags)
     }
 }
 

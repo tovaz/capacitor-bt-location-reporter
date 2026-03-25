@@ -69,36 +69,46 @@
 38-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:30:22-78
 39
 40    <application>
-40-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:32:5-51:19
+40-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:32:5-56:19
 41
-42        <!-- Foreground service that manages BLE + GPS + HTTP in background -->
-43        <service
-43-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:35:9-39:72
-44            android:name="com.paj.btlocationreporter.BtLocationReporterService"
-44-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:36:13-54
+42        <!-- BLE scan match receiver -->
+43        <receiver
+43-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:34:9-37:39
+44            android:name="com.paj.btlocationreporter.BleScanReceiver"
+44-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:35:13-70
 45            android:enabled="true"
-45-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:37:13-35
-46            android:exported="false"
-46-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:38:13-37
-47            android:foregroundServiceType="location|connectedDevice" />
-47-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:39:13-69
-48
-49        <!-- Auto-start service after device reboot -->
-50        <receiver
-50-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:42:9-49:20
-51            android:name="com.paj.btlocationreporter.BootReceiver"
-51-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:43:13-41
-52            android:enabled="true"
-52-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:44:13-35
-53            android:exported="true" >
-53-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:45:13-36
-54            <intent-filter>
-54-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:46:13-48:29
-55                <action android:name="android.intent.action.BOOT_COMPLETED" />
-55-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:47:17-79
-55-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:47:25-76
-56            </intent-filter>
-57        </receiver>
-58    </application>
-59
-60</manifest>
+45-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:36:13-35
+46            android:exported="true" />
+46-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:37:13-36
+47
+48        <!-- Foreground service that manages BLE + GPS + HTTP in background -->
+49        <service
+49-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:40:9-44:72
+50            android:name="com.paj.btlocationreporter.BtLocationReporterService"
+50-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:41:13-54
+51            android:enabled="true"
+51-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:42:13-35
+52            android:exported="false"
+52-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:43:13-37
+53            android:foregroundServiceType="location|connectedDevice" />
+53-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:44:13-69
+54
+55        <!-- Auto-start service after device reboot -->
+56        <receiver
+56-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:47:9-54:20
+57            android:name="com.paj.btlocationreporter.BootReceiver"
+57-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:48:13-41
+58            android:enabled="true"
+58-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:49:13-35
+59            android:exported="true" >
+59-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:50:13-36
+60            <intent-filter>
+60-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:51:13-53:29
+61                <action android:name="android.intent.action.BOOT_COMPLETED" />
+61-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:52:17-79
+61-->/Users/william/Desarrollo/capacitor-bt-location-reporter/android/src/main/AndroidManifest.xml:52:25-76
+62            </intent-filter>
+63        </receiver>
+64    </application>
+65
+66</manifest>
