@@ -22,11 +22,138 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
     ]
 
     private var coordinator: BtLocationReporter?
+    private let configStoreKey = "BtLocationReporterPlugin.config"
+
+    // MARK: - Config Store Helpers
+
+    private func saveConfig(_ config: BtLocationConfig) {
+        do {
+            let codable = ConfigCodable(config: config)
+            let data = try JSONEncoder().encode(codable)
+            UserDefaults.standard.set(data, forKey: configStoreKey)
+            LOG("[BtLocationReporterPlugin] Config saved to UserDefaults")
+            // Log JSON decodificado
+            if let json = try? JSONSerialization.jsonObject(with: data, options: []),
+               let pretty = try? JSONSerialization.data(withJSONObject: json, options: .prettyPrinted),
+               let str = String(data: pretty, encoding: .utf8) {
+                LOG("[BtLocationReporterPlugin] Config JSON saved:\n\(str)")
+            }
+        } catch {
+            LOG_ERROR("[BtLocationReporterPlugin] Failed to save config: \(error)")
+        }
+    }
+
+    private func loadConfig() -> BtLocationConfig? {
+        guard let data = UserDefaults.standard.data(forKey: configStoreKey) else { return nil }
+        do {
+            let codable = try JSONDecoder().decode(ConfigCodable.self, from: data)
+            return codable.toConfig()
+        } catch {
+            LOG_ERROR("[BtLocationReporterPlugin] Failed to load config: \(error)")
+            return nil
+        }
+    }
+
+    // Codable wrapper for BtLocationConfig (solo campos serializables)
+    private struct ConfigCodable: Codable {
+        let devices: [DeviceCodable]
+        let endpoint: String
+        let authToken: String?
+        let intervalMs: Double
+        let extraFields: [String: String] // Solo String para simplificar
+        let debug: Bool
+        let texts: NotificationTextsCodable
+
+        init(config: BtLocationConfig) {
+            self.devices = config.devices.map { DeviceCodable(entry: $0) }
+            self.endpoint = config.endpoint
+            self.authToken = config.authToken
+            self.intervalMs = config.intervalMs
+            self.extraFields = config.extraFields.compactMapValues { String(describing: $0) }
+            self.debug = config.debug
+            self.texts = NotificationTextsCodable(texts: config.texts)
+        }
+        func toConfig() -> BtLocationConfig {
+            BtLocationConfig(
+                devices: devices.map { $0.toEntry() },
+                endpoint: endpoint,
+                authToken: authToken,
+                intervalMs: intervalMs,
+                extraFields: extraFields,
+                debug: debug,
+                texts: texts.toTexts()
+            )
+        }
+    }
+    private struct DeviceCodable: Codable {
+        let bleDeviceId: String
+        let pajDeviceId: String
+        init(entry: BtDeviceEntry) {
+            self.bleDeviceId = entry.bleDeviceId
+            self.pajDeviceId = entry.pajDeviceId
+        }
+        func toEntry() -> BtDeviceEntry {
+            BtDeviceEntry(bleDeviceId: bleDeviceId, pajDeviceId: pajDeviceId, onConnectCommand: nil, onDisconnectCommand: nil)
+        }
+    }
+    private struct NotificationTextsCodable: Codable {
+        let connectedHeader: String
+        let connected: String
+        let trackerHeader: String
+        let tracker: String
+        init(texts: NotificationTexts) {
+            self.connectedHeader = texts.connectedHeader
+            self.connected = texts.connected
+            self.trackerHeader = texts.trackerHeader
+            self.tracker = texts.tracker
+        }
+        func toTexts() -> NotificationTexts {
+            NotificationTexts(
+                connectedHeader: connectedHeader,
+                connected: connected,
+                trackerHeader: trackerHeader,
+                tracker: tracker
+            )
+        }
+    }
     
     public override func load() {
         super.load()
         LOG("Plugin loaded - Capacitor bridge ready")
         LOG("Log file: \(FileLogger.shared.getLogFilePath())")
+        Task { @MainActor in
+            self.restoreIfPending()
+        }
+    }
+
+    @MainActor
+    private func restoreIfPending() {
+        // Restaurar solo si pendingRestore está presente
+        let pendingRestore = UserDefaults.standard.bool(forKey: "BtLocationReporterPlugin.pendingRestore")
+        if pendingRestore, let config = loadConfig() {
+            LOG("[BtLocationReporterPlugin] Pending BLE restore detected, relaunching start() con config guardado")
+            UserDefaults.standard.removeObject(forKey: "BtLocationReporterPlugin.pendingRestore")
+            restoreCoordinatorIfNeeded(config: config)
+        }
+    }
+
+    @MainActor
+    private func restoreCoordinatorIfNeeded(config: BtLocationConfig) {
+        if self.coordinator == nil {
+            self.coordinator = BtLocationReporter(plugin: self)
+        }
+        startCoordinator(config: config)
+    }
+
+    @MainActor
+    private func startCoordinator(config: BtLocationConfig) {
+        self.coordinator?.start(config: config) { error in
+            if let error = error {
+                LOG_ERROR("[BtLocationReporterPlugin] Auto-restore failed: \(error.localizedDescription)")
+            } else {
+                LOG("[BtLocationReporterPlugin] Auto-restore completed successfully")
+            }
+        }
     }
 
     // ── Plugin methods ────────────────────────────────────────────────────
@@ -98,6 +225,9 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
             texts:          texts
         )
 
+        // Guardar config en el store local
+        self.saveConfig(config)
+
         Task { @MainActor in
             if self.coordinator == nil {
                 LOG("Creating new BtLocationReporter coordinator")
@@ -151,6 +281,19 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         Task { @MainActor in
             self.coordinator?.addDevices(entries)
+            // Actualizar config en el store local
+            if let current = self.coordinator?.config {
+                let newConfig = BtLocationConfig(
+                    devices: current.devices + entries,
+                    endpoint: current.endpoint,
+                    authToken: current.authToken,
+                    intervalMs: current.intervalMs,
+                    extraFields: current.extraFields,
+                    debug: current.debug,
+                    texts: current.texts
+                )
+                self.saveConfig(newConfig)
+            }
             call.resolve()
         }
     }
@@ -171,6 +314,21 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         Task { @MainActor in
             self.coordinator?.removeDevices(entries)
+            // Actualizar config en el store local
+            if let current = self.coordinator?.config {
+                let removeIds = Set(entries.map { $0.bleDeviceId })
+                let newDevices = current.devices.filter { !removeIds.contains($0.bleDeviceId) }
+                let newConfig = BtLocationConfig(
+                    devices: newDevices,
+                    endpoint: current.endpoint,
+                    authToken: current.authToken,
+                    intervalMs: current.intervalMs,
+                    extraFields: current.extraFields,
+                    debug: current.debug,
+                    texts: current.texts
+                )
+                self.saveConfig(newConfig)
+            }
             call.resolve()
         }
     }

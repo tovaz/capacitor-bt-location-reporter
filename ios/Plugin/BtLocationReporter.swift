@@ -62,7 +62,7 @@ class BtLocationReporter: NSObject {
 
     private(set) var isRunning = false
     private weak var plugin: BtLocationReporterPlugin?
-    private var config: BtLocationConfig?
+    public private(set) var config: BtLocationConfig?
     private var bleManager: BleManager?
     private var locationMgr: LocationReporter?
     private var gpsSwitcher: GpsSwitcher?
@@ -79,15 +79,17 @@ class BtLocationReporter: NSObject {
 
     func start(config: BtLocationConfig, completion: @escaping (Error?) -> Void) {
         guard !isRunning else { completion(nil); return }
-        
+
+        LOG("[BtLocationReporter] [PERSIST] start(config:) called. Devices: \(config.devices.count), interval: \(config.intervalMs)ms, debug: \(config.debug)")
         self.config = config
         self.isRunning = true
         self.locationPermissionRequested = false
-        
+
         // Enable debug logging
         FileLogger.shared.debugEnabled = config.debug
-        
+
         LOG("[BtLocationReporter] Starting: \(config.devices.count) devices, interval=\(config.intervalMs)ms, debug=\(config.debug)")
+        LOG("[BtLocationReporter] [PERSIST] start(config:) - after setting config and debugEnabled")
 
         // Show local notification about monitoring started
         showMonitoringStartedNotification()
@@ -173,7 +175,8 @@ class BtLocationReporter: NSObject {
         
         // Check if we need to pause location after removing devices
         if let connectedIds = bleManager?.connectedIds, connectedIds.isEmpty {
-            locationMgr?.pause()
+            // locationMgr?.pause()
+            locationMgr?.enableLowPowerMode()
         }
     }
 
@@ -193,32 +196,37 @@ class BtLocationReporter: NSObject {
 
     private func handleBleConnected(_ deviceId: String, peripheral: CBPeripheral) {
         let wasEmpty = true; //(bleManager?.connectedIds.count ?? 0) == 1  // Just became 1 (this device)
-        
+
         LOG("[BtLocationReporter] BLE connected: \(deviceId)")
+        LOG("[BtLocationReporter] [PERSIST] handleBleConnected: deviceId=\(deviceId)")
         gpsSwitcher?.onDeviceConnected(bleDeviceId: deviceId, peripheral: peripheral)
         plugin?.emitBleConnection(deviceId: deviceId, connected: true)
-        
+
         // Show local notification about BLE connection
         showBleConnectionNotification(deviceId: deviceId, deviceName: peripheral.name)
-        
+
         // Resume location tracking when first device connects (if we have permission)
         if wasEmpty {
             if locationMgr?.hasPermission == true {
                 LOG("[BtLocationReporter] First device connected — resuming location")
+                LOG("[BtLocationReporter] [PERSIST] handleBleConnected: calling locationMgr.resume()")
                 locationMgr?.resume()
             } else if !locationPermissionRequested {
                 // First BLE connected but no location permission - request it automatically
                 locationPermissionRequested = true
                 LOG("[BtLocationReporter] First device connected — auto-requesting location permission")
+                LOG("[BtLocationReporter] [PERSIST] handleBleConnected: requesting location permission")
                 plugin?.emitLocationPermissionRequired()
-                
+
                 // Automatically request permission (iOS shows system dialog)
                 locationMgr?.requestAlwaysPermission { [weak self] granted in
                     if granted {
                         LOG("[BtLocationReporter] Location permission granted — starting tracking")
+                        LOG("[BtLocationReporter] [PERSIST] location permission granted, calling locationMgr.resume()")
                         self?.locationMgr?.resume()
                     } else {
                         LOG_ERROR("[BtLocationReporter] Location permission denied")
+                        LOG("[BtLocationReporter] [PERSIST] location permission denied")
                     }
                 }
             }
@@ -233,13 +241,15 @@ class BtLocationReporter: NSObject {
         // Pause location tracking when all devices disconnected
         if let connectedIds = bleManager?.connectedIds, connectedIds.isEmpty {
             LOG("[BtLocationReporter] All devices disconnected — pausing location")
-            locationMgr?.pause()
+            // locationMgr?.pause()
+            locationMgr?.enableLowPowerMode()
         }
     }
     
     private func handleBluetoothOff() {
         LOG("[BtLocationReporter] Bluetooth OFF — pausing location")
-        locationMgr?.pause()
+        // locationMgr?.pause()
+        locationMgr?.enableLowPowerMode()
     }
 
     // ── HTTP Report ───────────────────────────────────────────────────────
@@ -294,38 +304,69 @@ class BtLocationReporter: NSObject {
         */
     }
     
+
     // ── Local Notifications ───────────────────────────────────────────────
-    
+
     private func showBleConnectionNotification(deviceId: String, deviceName: String?) {
         let center = UNUserNotificationCenter.current()
         let texts = config?.texts ?? NotificationTexts.defaults
-        
+
         // Check if permission is granted (don't request, just check)
         center.getNotificationSettings { settings in
             guard settings.authorizationStatus == .authorized else {
                 LOG("[BtLocationReporter] No notification permission, skipping BLE connection notification")
                 return
             }
-            
+
             let displayName = deviceName?.isEmpty == false ? deviceName! : deviceId
-            
+
             let content = UNMutableNotificationContent()
             content.title = texts.connectedHeader
             content.body = texts.connected.replacingOccurrences(of: "{device}", with: displayName)
             content.sound = .default
-            
+
             // Show immediately
             let request = UNNotificationRequest(
                 identifier: "ble_connection_\(deviceId)",
                 content: content,
                 trigger: nil  // nil = deliver immediately
             )
-            
+
             center.add(request) { error in
                 if let error = error {
                     LOG_ERROR("[BtLocationReporter] Failed to show notification: \(error.localizedDescription)")
                 } else {
                     LOG("[BtLocationReporter] Showed BLE connection notification for: \(displayName)")
+                }
+            }
+        }
+    }
+
+    /// Show notification when a known BLE device is nearby (not connected)
+    func showBleNearbyNotification(deviceId: String, deviceName: String?) {
+        let center = UNUserNotificationCenter.current()
+        // Mensaje fijo en inglés, no depende de texts
+        let displayName = deviceName?.isEmpty == false ? deviceName! : deviceId
+        let content = UNMutableNotificationContent()
+        content.title = "Bluetooth device nearby"
+        content.body = "A known Bluetooth device (\(displayName)) is nearby. Open the app to connect and save battery."
+        content.sound = .default
+
+        center.getNotificationSettings { settings in
+            guard settings.authorizationStatus == .authorized else {
+                LOG("[BtLocationReporter] No notification permission, skipping BLE nearby notification")
+                return
+            }
+            let request = UNNotificationRequest(
+                identifier: "ble_nearby_\(deviceId)",
+                content: content,
+                trigger: nil
+            )
+            center.add(request) { error in
+                if let error = error {
+                    LOG_ERROR("[BtLocationReporter] Failed to show BLE nearby notification: \(error.localizedDescription)")
+                } else {
+                    LOG("[BtLocationReporter] Showed BLE nearby notification for: \(displayName)")
                 }
             }
         }

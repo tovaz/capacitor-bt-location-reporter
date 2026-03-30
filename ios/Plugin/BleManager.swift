@@ -143,6 +143,8 @@ extension BleManager: CBCentralManagerDelegate {
     // State restoration — iOS relaunches app in background and passes back the saved state
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         LOG("[BleManager] State restored")
+        // Guardar flag temporal para restauración automática
+        UserDefaults.standard.set(true, forKey: "BtLocationReporterPlugin.pendingRestore")
         if let peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] {
             for p in peripherals {
                 p.delegate = self

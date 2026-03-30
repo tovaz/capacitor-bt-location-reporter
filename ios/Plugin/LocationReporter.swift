@@ -103,6 +103,26 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
         LOG("[LocationReporter] Stopped")
     }
 
+    /// Activa el modo bajo consumo: accuracy baja, distancia alta, pausa automática y solo cambios significativos.
+    /// Llama a este método cuando no haya dispositivos BLE conectados o el Bluetooth esté apagado.
+    func enableLowPowerMode() {
+        // Configuración recomendada para bajo consumo
+        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        manager.distanceFilter = 500
+        manager.pausesLocationUpdatesAutomatically = true
+        manager.showsBackgroundLocationIndicator = false
+
+        // Detener cualquier tracking activo
+        if isTracking {
+            manager.stopUpdatingLocation()
+            isTracking = false
+        }
+
+        // Iniciar solo cambios significativos
+        manager.startMonitoringSignificantLocationChanges()
+        LOG("[LocationReporter] Low Power Mode ACTIVATED: accuracy=HundredMeters, distanceFilter=500m, pauses=YES, indicator=NO, usando startMonitoringSignificantLocationChanges()")
+    }
+
     // ── CLLocationManagerDelegate ─────────────────────────────────────────
 
     func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {

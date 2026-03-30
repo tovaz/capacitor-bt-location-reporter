@@ -1,5 +1,17 @@
-import { WebPlugin } from '@capacitor/core';
-export class BtLocationReporterWeb extends WebPlugin {
+'use strict';
+
+var core = require('@capacitor/core');
+
+/**
+ * Capacitor plugin instance.
+ * On native platforms the native implementation is used automatically.
+ * On web a stub is used (operations are no-ops with a console warning).
+ */
+const BtLocationReporter = core.registerPlugin('BtLocationReporter', {
+    web: () => Promise.resolve().then(function () { return web; }).then(m => new m.BtLocationReporterWeb()),
+});
+
+class BtLocationReporterWeb extends core.WebPlugin {
     warn() {
         console.warn('[BtLocationReporter] Background BLE+GPS reporting is not supported on web.');
     }
@@ -33,3 +45,10 @@ export class BtLocationReporterWeb extends WebPlugin {
         return { granted: false };
     }
 }
+
+var web = /*#__PURE__*/Object.freeze({
+    __proto__: null,
+    BtLocationReporterWeb: BtLocationReporterWeb
+});
+
+exports.BtLocationReporter = BtLocationReporter;

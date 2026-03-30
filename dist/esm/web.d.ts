@@ -19,4 +19,10 @@ export declare class BtLocationReporterWeb extends WebPlugin implements BtLocati
     getLogs(): Promise<{
         logs: string;
     }>;
+    requestLocationPermission(): Promise<{
+        granted: boolean;
+    }>;
+    hasLocationPermission(): Promise<{
+        granted: boolean;
+    }>;
 }
