@@ -176,7 +176,7 @@ class BtLocationReporter: NSObject {
         // Check if we need to pause location after removing devices
         if let connectedIds = bleManager?.connectedIds, connectedIds.isEmpty {
             // locationMgr?.pause()
-            locationMgr?.enableLowPowerMode()
+            // locationMgr?.enableLowPowerMode()
         }
     }
 
@@ -242,14 +242,14 @@ class BtLocationReporter: NSObject {
         if let connectedIds = bleManager?.connectedIds, connectedIds.isEmpty {
             LOG("[BtLocationReporter] All devices disconnected — pausing location")
             // locationMgr?.pause()
-            locationMgr?.enableLowPowerMode()
+            // locationMgr?.enableLowPowerMode()
         }
     }
     
     private func handleBluetoothOff() {
         LOG("[BtLocationReporter] Bluetooth OFF — pausing location")
         // locationMgr?.pause()
-        locationMgr?.enableLowPowerMode()
+        // locationMgr?.enableLowPowerMode()
     }
 
     // ── HTTP Report ───────────────────────────────────────────────────────

@@ -60,7 +60,7 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
         guard !isTracking else { return }
         isTracking = true
         manager.allowsBackgroundLocationUpdates = true
-        manager.showsBackgroundLocationIndicator = true
+        manager.showsBackgroundLocationIndicator = false
         manager.startUpdatingLocation()
         LOG("[LocationReporter] Started (background enabled)")
     }

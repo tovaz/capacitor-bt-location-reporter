@@ -100,10 +100,11 @@ Luego en GitHub: Releases → Draft a new release → elige el tag v0.1.0.
 Cada vez que hagas cambios:
 
 ```bash
+git push...
 npm version patch   # 0.1.0 → 0.1.1
 # o
 npm version minor   # 0.1.0 → 0.2.0
+npm run build
 
-git push && git push --tags
 npm publish
 ```
