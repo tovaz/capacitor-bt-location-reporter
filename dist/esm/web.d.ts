@@ -25,4 +25,10 @@ export declare class BtLocationReporterWeb extends WebPlugin implements BtLocati
     hasLocationPermission(): Promise<{
         granted: boolean;
     }>;
+    writeWithoutResponse(_options: {
+        deviceId: string;
+        service: string;
+        characteristic: string;
+        value: number[];
+    }): Promise<void>;
 }

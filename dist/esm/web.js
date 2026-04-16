@@ -32,4 +32,7 @@ export class BtLocationReporterWeb extends WebPlugin {
         this.warn();
         return { granted: false };
     }
+    async writeWithoutResponse(_options) {
+        this.warn();
+    }
 }

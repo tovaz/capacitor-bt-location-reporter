@@ -43,6 +43,9 @@ var TovazCapacitorBtLocationReporter = (function (exports, core) {
             this.warn();
             return { granted: false };
         }
+        async writeWithoutResponse(_options) {
+            this.warn();
+        }
     }
 
     var web = /*#__PURE__*/Object.freeze({
