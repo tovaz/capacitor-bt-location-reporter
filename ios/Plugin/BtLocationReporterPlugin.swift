@@ -19,6 +19,7 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "getLogs",                  returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestLocationPermission", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "hasLocationPermission",     returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "writeWithoutResponse",      returnType: CAPPluginReturnPromise),
     ]
 
     private var coordinator: BtLocationReporter?
@@ -392,7 +393,49 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
         let granted = status == .authorizedAlways || status == .authorizedWhenInUse
         call.resolve(["granted": granted])
     }
-    
+
+    @objc func writeWithoutResponse(_ call: CAPPluginCall) {
+        guard let deviceId = call.getString("deviceId") else {
+            call.reject("deviceId is required"); return
+        }
+        guard let service = call.getString("service") else {
+            call.reject("service is required"); return
+        }
+        guard let characteristic = call.getString("characteristic") else {
+            call.reject("characteristic is required"); return
+        }
+        guard let rawValue = call.getArray("value") as? [Int] else {
+            call.reject("value (byte array) is required"); return
+        }
+
+        let data = Data(rawValue.map { UInt8(clamping: $0) })
+        let serviceUUID = CBUUID(string: service)
+        let charUUID    = CBUUID(string: characteristic)
+
+        LOG("writeWithoutResponse: device=\(deviceId) service=\(service) char=\(characteristic) bytes=\(data.count)")
+
+        Task { @MainActor in
+            guard let coordinator = self.coordinator else {
+                call.reject("Service not started — call start() first")
+                return
+            }
+            coordinator.writeWithoutResponse(
+                deviceId: deviceId,
+                serviceUUID: serviceUUID,
+                characteristicUUID: charUUID,
+                data: data
+            ) { error in
+                if let error = error {
+                    LOG_ERROR("writeWithoutResponse failed: \(error.localizedDescription)")
+                    call.reject(error.localizedDescription)
+                } else {
+                    LOG("writeWithoutResponse succeeded")
+                    call.resolve()
+                }
+            }
+        }
+    }
+
     // ── Helper methods ────────────────────────────────────────────────────
     
     private func parseCommand(_ value: Any?) -> BleCommand? {

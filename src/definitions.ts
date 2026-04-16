@@ -209,4 +209,21 @@ export interface BtLocationReporterPlugin {
    * Remove all native event listeners.
    */
   removeAllListeners(): Promise<void>;
+
+  /**
+   * Writes data to a BLE characteristic without waiting for a response from the device.
+   * Equivalent to BleClient.writeWithoutResponse.
+   *
+   * @param options.deviceId  BLE device UUID (same as used in `devices[].bleDeviceId`).
+   * @param options.service   GATT service UUID.
+   * @param options.characteristic GATT characteristic UUID.
+   * @param options.value     Bytes to write as an array of numbers (0–255).
+   *                          Convert a DataView: Array.from(new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength))
+   */
+  writeWithoutResponse(options: {
+    deviceId: string;
+    service: string;
+    characteristic: string;
+    value: number[];
+  }): Promise<void>;
 }

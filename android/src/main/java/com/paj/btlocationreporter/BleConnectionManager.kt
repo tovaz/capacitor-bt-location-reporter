@@ -9,6 +9,8 @@ import android.content.IntentFilter
 import android.os.Build
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -38,6 +40,14 @@ class BleConnectionManager(
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val gattMap = mutableMapOf<String, BluetoothGatt>()
+
+    private data class PendingWrite(
+        val serviceUuid: UUID,
+        val charUuid: UUID,
+        val data: ByteArray,
+        val callback: (Exception?) -> Unit
+    )
+    private val pendingWrites = ConcurrentHashMap<String, PendingWrite>()
 
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
@@ -99,6 +109,57 @@ class BleConnectionManager(
             gattMap[id]?.let { g -> g.disconnect(); g.close() }
             gattMap.remove(id)
             connectedIds.remove(id)
+        }
+    }
+
+    /**
+     * Writes [data] to [charUuid] on [deviceId] with WRITE_TYPE_NO_RESPONSE.
+     * Performs GATT service discovery automatically if the characteristic is not
+     * yet cached on the GATT object (slow path).
+     */
+    @Suppress("DEPRECATION")
+    fun writeWithoutResponse(
+        deviceId: String,
+        serviceUuid: UUID,
+        charUuid: UUID,
+        data: ByteArray,
+        callback: (Exception?) -> Unit
+    ) {
+        val gatt = gattMap[deviceId]
+        if (gatt == null) {
+            callback(Exception("Device not connected: $deviceId"))
+            return
+        }
+
+        // Fast path: services already discovered
+        val characteristic = gatt.getService(serviceUuid)?.getCharacteristic(charUuid)
+        if (characteristic != null) {
+            doWrite(gatt, characteristic, data, callback)
+            return
+        }
+
+        // Slow path: queue the write and trigger service discovery
+        LOG("[BleConnectionManager] writeWithoutResponse: services not cached for $deviceId, discovering...")
+        pendingWrites[deviceId] = PendingWrite(serviceUuid, charUuid, data, callback)
+        scope.launch(Dispatchers.Main) { gatt.discoverServices() }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun doWrite(
+        gatt: BluetoothGatt,
+        characteristic: BluetoothGattCharacteristic,
+        data: ByteArray,
+        callback: (Exception?) -> Unit
+    ) {
+        characteristic.value = data
+        characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+        val success = gatt.writeCharacteristic(characteristic)
+        if (success) {
+            LOG("[BleConnectionManager] writeWithoutResponse: write queued ok")
+            callback(null)
+        } else {
+            LOG_ERROR("[BleConnectionManager] writeWithoutResponse: writeCharacteristic returned false")
+            callback(Exception("writeCharacteristic failed for device ${gatt.device?.address}"))
         }
     }
 
@@ -175,6 +236,19 @@ class BleConnectionManager(
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             onServicesDiscovered?.invoke(deviceId, gatt, status)
+
+            // Handle any write queued by writeWithoutResponse() while services were not yet cached
+            val pending = pendingWrites.remove(deviceId) ?: return
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                pending.callback(Exception("GATT service discovery failed: $status"))
+                return
+            }
+            val char = gatt.getService(pending.serviceUuid)?.getCharacteristic(pending.charUuid)
+            if (char == null) {
+                pending.callback(Exception("Characteristic not found: ${pending.charUuid}"))
+                return
+            }
+            doWrite(gatt, char, pending.data, pending.callback)
         }
     }
 }

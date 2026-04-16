@@ -33,6 +33,9 @@ class BleManager: NSObject {
 
     private let reconnectDelay: TimeInterval = 3.0
 
+    /// Retained write sessions (CBPeripheral holds only a weak delegate reference)
+    private var activeSessions: [UUID: BleWriteSession] = [:]
+
     // ── Init ──────────────────────────────────────────────────────────────
 
     init(deviceIds: [String],
@@ -87,6 +90,36 @@ class BleManager: NSObject {
         }
     }
 
+    /// Writes `data` to `characteristicUUID` on `deviceId` without expecting a response.
+    /// Performs GATT service/characteristic discovery automatically if needed.
+    func writeWithoutResponse(deviceId: String,
+                              serviceUUID: CBUUID,
+                              characteristicUUID: CBUUID,
+                              data: Data,
+                              completion: @escaping (Error?) -> Void) {
+        guard let peripheral = peripheralMap.values.first(where: { $0.identifier.uuidString == deviceId }),
+              peripheral.state == .connected else {
+            completion(NSError(domain: "BleManager", code: 0,
+                               userInfo: [NSLocalizedDescriptionKey: "Device not connected: \(deviceId)"]))
+            return
+        }
+
+        let sessionId = UUID()
+        let session = BleWriteSession(
+            peripheral: peripheral,
+            service: serviceUUID,
+            characteristic: characteristicUUID,
+            data: data,
+            completion: { [weak self] error in
+                self?.activeSessions.removeValue(forKey: sessionId)
+                completion(error)
+            }
+        )
+        activeSessions[sessionId] = session
+        session.execute()
+        LOG("[BleManager] writeWithoutResponse queued: device=\(deviceId) service=\(serviceUUID) char=\(characteristicUUID) bytes=\(data.count)")
+    }
+
     // ── Internal ──────────────────────────────────────────────────────────
 
     private func connectAllKnown() {
@@ -116,6 +149,89 @@ class BleManager: NSObject {
             guard let self, self.targetUUIDs.contains(peripheral.identifier) else { return }
             self.central.connect(peripheral, options: nil)
         }
+    }
+}
+
+// ── BleWriteSession ───────────────────────────────────────────────────────────
+//
+// One-shot helper: discovers service/characteristic (if needed) on a connected
+// peripheral, writes data with .withoutResponse, then calls the completion.
+// BleManager holds a strong reference until the session finishes (CBPeripheral
+// keeps only a weak delegate pointer so we must retain the session ourselves).
+
+private class BleWriteSession: NSObject, CBPeripheralDelegate {
+
+    private let peripheral:    CBPeripheral
+    private let serviceUUID:   CBUUID
+    private let charUUID:      CBUUID
+    private let data:          Data
+    private let completion:    (Error?) -> Void
+    private weak var previousDelegate: CBPeripheralDelegate?
+
+    init(peripheral: CBPeripheral,
+         service: CBUUID,
+         characteristic: CBUUID,
+         data: Data,
+         completion: @escaping (Error?) -> Void) {
+        self.peripheral  = peripheral
+        self.serviceUUID = service
+        self.charUUID    = characteristic
+        self.data        = data
+        self.completion  = completion
+        super.init()
+    }
+
+    func execute() {
+        // Fast path: characteristic already discovered
+        if let char = peripheral.services?
+            .first(where: { $0.uuid == serviceUUID })?
+            .characteristics?
+            .first(where: { $0.uuid == charUUID }) {
+            writeAndFinish(char)
+            return
+        }
+        // Slow path: need GATT discovery
+        previousDelegate   = peripheral.delegate
+        peripheral.delegate = self
+        peripheral.discoverServices([serviceUUID])
+    }
+
+    private func writeAndFinish(_ characteristic: CBCharacteristic) {
+        peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
+        peripheral.delegate = previousDelegate
+        completion(nil)
+    }
+
+    // MARK: – CBPeripheralDelegate
+
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        if let error = error {
+            peripheral.delegate = previousDelegate
+            completion(error); return
+        }
+        guard let service = peripheral.services?.first(where: { $0.uuid == serviceUUID }) else {
+            peripheral.delegate = previousDelegate
+            completion(NSError(domain: "BleManager", code: 1,
+                               userInfo: [NSLocalizedDescriptionKey: "Service not found: \(serviceUUID)"]))
+            return
+        }
+        peripheral.discoverCharacteristics([charUUID], for: service)
+    }
+
+    func peripheral(_ peripheral: CBPeripheral,
+                    didDiscoverCharacteristicsFor service: CBService,
+                    error: Error?) {
+        if let error = error {
+            peripheral.delegate = previousDelegate
+            completion(error); return
+        }
+        guard let char = service.characteristics?.first(where: { $0.uuid == charUUID }) else {
+            peripheral.delegate = previousDelegate
+            completion(NSError(domain: "BleManager", code: 2,
+                               userInfo: [NSLocalizedDescriptionKey: "Characteristic not found: \(charUUID)"]))
+            return
+        }
+        writeAndFinish(char)
     }
 }
 

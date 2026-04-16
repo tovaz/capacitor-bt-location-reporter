@@ -1,6 +1,7 @@
 package com.paj.btlocationreporter
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -17,6 +18,7 @@ import com.getcapacitor.annotation.PermissionCallback
 import com.paj.btlocationreporter.LinkedDeviceStore
 import com.paj.btlocationreporter.ConfigStore
 import org.json.JSONObject
+import java.util.UUID
 
 private const val LOCATION_PERMISSION_REQUEST_CODE = 12345
 
@@ -370,5 +372,36 @@ class BtLocationReporterPlugin : Plugin() {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
             LOCATION_PERMISSION_REQUEST_CODE
         )
+    }
+
+    @PluginMethod
+    fun writeWithoutResponse(call: PluginCall) {
+        val deviceId = call.getString("deviceId")
+            ?: run { call.reject("deviceId is required"); return }
+        val service = call.getString("service")
+            ?: run { call.reject("service is required"); return }
+        val characteristic = call.getString("characteristic")
+            ?: run { call.reject("characteristic is required"); return }
+        val rawValue = call.getArray("value")
+            ?: run { call.reject("value (byte array) is required"); return }
+
+        val serviceUuid = try { UUID.fromString(service) }
+            catch (e: Exception) { call.reject("Invalid service UUID: $service"); return }
+        val charUuid = try { UUID.fromString(characteristic) }
+            catch (e: Exception) { call.reject("Invalid characteristic UUID: $characteristic"); return }
+
+        val bytes = ByteArray(rawValue.length()) { i -> rawValue.getInt(i).and(0xFF).toByte() }
+
+        LOG("[BtLocationReporterPlugin] writeWithoutResponse: device=$deviceId service=$service char=$characteristic bytes=${bytes.size}")
+
+        BtLocationReporterService.writeWithoutResponse(deviceId, serviceUuid, charUuid, bytes) { error ->
+            if (error != null) {
+                LOG_ERROR("[BtLocationReporterPlugin] writeWithoutResponse failed: ${error.message}")
+                call.reject(error.message ?: "Write failed")
+            } else {
+                LOG("[BtLocationReporterPlugin] writeWithoutResponse succeeded")
+                call.resolve()
+            }
+        }
     }
 }

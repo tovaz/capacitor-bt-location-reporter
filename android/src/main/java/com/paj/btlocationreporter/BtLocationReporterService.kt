@@ -25,6 +25,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 
 import java.io.IOException
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
@@ -75,6 +76,21 @@ class BtLocationReporterService : Service() {
         
         fun onLocationPermissionGranted() {
             serviceInstance?.handleLocationPermissionGranted()
+        }
+
+        fun writeWithoutResponse(
+            deviceId: String,
+            serviceUuid: UUID,
+            charUuid: UUID,
+            data: ByteArray,
+            callback: (Exception?) -> Unit
+        ) {
+            val svc = serviceInstance
+            if (svc == null || !svc::bleManager.isInitialized) {
+                callback(Exception("Service not started — call start() first"))
+                return
+            }
+            svc.bleManager.writeWithoutResponse(deviceId, serviceUuid, charUuid, data, callback)
         }
     }
 
@@ -518,14 +534,17 @@ class BtLocationReporterService : Service() {
             put("lng", location.longitude)
             put("accuracy", location.accuracy)
             put("timestamp", System.currentTimeMillis())
+            // Add bearing if available
+            if (location.hasBearing()) {
+                put("direction", location.bearing)
+            }
         }
 
         LOG("[BtLocationReporterService] Report: devices=$connectedPajIds, loc=(${String.format("%.5f", location.latitude)}, ${String.format("%.5f", location.longitude)})")
 
         // DEBUG: Skip HTTP, emit success
-        notifyResult(body, 200, true)
+        // notifyResult(body, 200, true)
 
-        /* UNCOMMENT FOR REAL HTTP:
         val request = Request.Builder()
             .url(endpoint)
             .post(body.toString().toRequestBody("application/json".toMediaType()))
@@ -551,7 +570,6 @@ class BtLocationReporterService : Service() {
                 response.close()
             }
         })
-        */
     }
 
     private fun notifyResult(body: JSONObject, httpStatus: Int, success: Boolean) {

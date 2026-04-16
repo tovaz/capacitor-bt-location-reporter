@@ -50,4 +50,13 @@ export class BtLocationReporterWeb
     this.warn();
     return { granted: false };
   }
+
+  async writeWithoutResponse(_options: {
+    deviceId: string;
+    service: string;
+    characteristic: string;
+    value: number[];
+  }): Promise<void> {
+    this.warn();
+  }
 }

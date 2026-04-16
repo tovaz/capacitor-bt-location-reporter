@@ -164,6 +164,23 @@ class BtLocationReporter: NSObject {
         LOG("[BtLocationReporter] Added \(entries.count) devices")
     }
 
+    func writeWithoutResponse(deviceId: String,
+                              serviceUUID: CBUUID,
+                              characteristicUUID: CBUUID,
+                              data: Data,
+                              completion: @escaping (Error?) -> Void) {
+        guard let bleManager = bleManager else {
+            completion(NSError(domain: "BtLocationReporter", code: 0,
+                               userInfo: [NSLocalizedDescriptionKey: "BLE not started"]))
+            return
+        }
+        bleManager.writeWithoutResponse(deviceId: deviceId,
+                                        serviceUUID: serviceUUID,
+                                        characteristicUUID: characteristicUUID,
+                                        data: data,
+                                        completion: completion)
+    }
+
     func removeDevices(_ entries: [BtDeviceEntry]) {
         let bleIds = entries.map { $0.bleDeviceId }
         bleManager?.removeDevices(bleIds)
@@ -264,15 +281,19 @@ class BtLocationReporter: NSObject {
         body["lng"] = location.coordinate.longitude
         body["accuracy"] = location.horizontalAccuracy
         body["timestamp"] = Int64(Date().timeIntervalSince1970 * 1_000)
+        // Add heading if available
+        if location.course >= 0 {
+            body["direction"] = location.course
+        }
 
         LOG("[BtLocationReporter] Report: devices=\(connectedPajIds), loc=(\(String(format: "%.5f", location.coordinate.latitude)), \(String(format: "%.5f", location.coordinate.longitude)))")
         
         // DEBUG: Skip HTTP, emit success
-        Task { @MainActor [weak self] in
-            self?.plugin?.emitLocationReport(payload: body, httpStatus: 200, success: true)
-        }
+        // Task { @MainActor [weak self] in
+        //     self?.plugin?.emitLocationReport(payload: body, httpStatus: 200, success: true)
+        // }
         
-        /* UNCOMMENT FOR REAL HTTP:
+        
         guard let url = URL(string: config.endpoint),
               let jsonData = try? JSONSerialization.data(withJSONObject: body) else {
             LOG_ERROR("[BtLocationReporter] Invalid URL or JSON")
@@ -301,7 +322,7 @@ class BtLocationReporter: NSObject {
             
             Task { @MainActor in self?.plugin?.emitLocationReport(payload: body, httpStatus: httpStatus, success: success) }
         }.resume()
-        */
+        
     }
     
 
