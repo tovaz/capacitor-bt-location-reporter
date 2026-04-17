@@ -1,4 +1,5 @@
 import Capacitor
+import CoreBluetooth
 import CoreLocation
 import Foundation
 
