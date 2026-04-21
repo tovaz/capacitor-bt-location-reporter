@@ -499,6 +499,10 @@ class BtLocationReporterService : Service() {
         serviceScope.launch {
             while (isActive) {
                 pendingCommand?.let { cmd ->
+                    // Esperar a que bleManager esté inicializado antes de processar comandos
+                    if (!::bleManager.isInitialized) {
+                        return@let
+                    }
                     when (cmd) {
                         is Command.AddDevices -> {
                             bleManager.addDevices(cmd.entries.keys.toList())

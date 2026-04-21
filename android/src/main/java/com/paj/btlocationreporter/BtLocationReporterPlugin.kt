@@ -12,8 +12,6 @@ import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
-import com.getcapacitor.annotation.Permission
-import com.getcapacitor.annotation.PermissionCallback
 
 import com.paj.btlocationreporter.LinkedDeviceStore
 import com.paj.btlocationreporter.ConfigStore
@@ -21,16 +19,12 @@ import org.json.JSONObject
 import java.util.UUID
 
 private const val LOCATION_PERMISSION_REQUEST_CODE = 12345
+private const val BT_PERMISSION_REQUEST_CODE = 12346
 
-@CapacitorPlugin(
-    name = "BtLocationReporter",
-    permissions = [
-        Permission(
-            strings = [Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN],
-            alias = "bluetooth"
-        )
-    ]
-)
+// Los permisos NO se declaran aquí en la anotación de Capacitor para evitar
+// que el framework los solicite automáticamente al arrancar la app.
+// Se piden manualmente solo cuando el usuario llama a start().
+@CapacitorPlugin(name = "BtLocationReporter")
 class BtLocationReporterPlugin : Plugin() {
 
     private var pendingStartCall: PluginCall? = null
@@ -92,10 +86,17 @@ class BtLocationReporterPlugin : Plugin() {
         // Persist linked device IDs for BLE scan + PendingIntent in background
         LinkedDeviceStore.saveLinkedDevices(context, bleIds.toSet())
 
-        // Only check Bluetooth permissions at start - location will be requested when first BLE connects
+        // Solo pedir permisos BT aquí (en start()), nunca al arrancar la app.
         if (!checkBluetoothPermissionsGranted()) {
             pendingStartCall = call
-            requestPermissionForAlias("bluetooth", call, "onBluetoothPermissionsResult")
+            bridge.saveCall(call)  // Mantener la llamada viva mientras esperamos el diálogo
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                ActivityCompat.requestPermissions(
+                    activity,
+                    arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN),
+                    BT_PERMISSION_REQUEST_CODE
+                )
+            }
             return
         }
 
@@ -203,18 +204,6 @@ class BtLocationReporterPlugin : Plugin() {
         call.resolve(JSObject().put("logs", FileLogger.getLogs()))
     }
 
-    // ── Permission callback ────────────────────────────────────────────────
-
-    @PermissionCallback
-    private fun onBluetoothPermissionsResult(call: PluginCall) {
-        if (checkBluetoothPermissionsGranted()) {
-            pendingStartCall?.let { start(it) }
-        } else {
-            call.reject("Bluetooth permissions were not granted")
-        }
-        pendingStartCall = null
-    }
-
     @PluginMethod
     fun requestLocationPermission(call: PluginCall) {
         LOG("[BtLocationReporterPlugin] requestLocationPermission() called")
@@ -236,17 +225,31 @@ class BtLocationReporterPlugin : Plugin() {
     
     override fun handleRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.handleRequestPermissionsResult(requestCode, permissions, grantResults)
-        
-        if (requestCode == LOCATION_PERMISSION_REQUEST_CODE) {
-            val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
-            LOG("[BtLocationReporterPlugin] Location permission result: granted=$granted")
-            
-            if (granted) {
-                BtLocationReporterService.onLocationPermissionGranted()
+
+        when (requestCode) {
+            BT_PERMISSION_REQUEST_CODE -> {
+                val granted = checkBluetoothPermissionsGranted()
+                LOG("[BtLocationReporterPlugin] BT permission result: granted=$granted")
+                val savedCall = pendingStartCall
+                pendingStartCall = null
+                if (savedCall != null) {
+                    bridge.releaseCall(savedCall)
+                    if (granted) {
+                        start(savedCall)
+                    } else {
+                        savedCall.reject("Bluetooth permissions were not granted")
+                    }
+                }
             }
-            
-            pendingLocationCall?.resolve(JSObject().put("granted", granted))
-            pendingLocationCall = null
+            LOCATION_PERMISSION_REQUEST_CODE -> {
+                val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+                LOG("[BtLocationReporterPlugin] Location permission result: granted=$granted")
+                if (granted) {
+                    BtLocationReporterService.onLocationPermissionGranted()
+                }
+                pendingLocationCall?.resolve(JSObject().put("granted", granted))
+                pendingLocationCall = null
+            }
         }
     }
 

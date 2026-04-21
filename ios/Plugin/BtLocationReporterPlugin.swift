@@ -130,13 +130,21 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @MainActor
     private func restoreIfPending() {
-        // Restaurar solo si pendingRestore está presente
+        // Solo restaurar si el flag está presente Y si iOS nos relanzó en background (no si el usuario abrió la app normalmente).
+        // Esto evita que se cree CBCentralManager (y se pida permiso BT) en aperturas normales del usuario.
         let pendingRestore = UserDefaults.standard.bool(forKey: "BtLocationReporterPlugin.pendingRestore")
-        if pendingRestore, let config = loadConfig() {
-            LOG("[BtLocationReporterPlugin] Pending BLE restore detected, relaunching start() con config guardado")
-            UserDefaults.standard.removeObject(forKey: "BtLocationReporterPlugin.pendingRestore")
-            restoreCoordinatorIfNeeded(config: config)
+        guard pendingRestore else { return }
+
+        let isBackgroundLaunch = UIApplication.shared.applicationState != .active
+        guard isBackgroundLaunch else {
+            LOG("[BtLocationReporterPlugin] App abierta en primer plano — omitiendo auto-restore (se requiere start() explícito desde JS)")
+            return
         }
+
+        guard let config = loadConfig() else { return }
+        LOG("[BtLocationReporterPlugin] Relanzamiento BLE en background detectado — restaurando sesión")
+        UserDefaults.standard.removeObject(forKey: "BtLocationReporterPlugin.pendingRestore")
+        restoreCoordinatorIfNeeded(config: config)
     }
 
     @MainActor
@@ -254,6 +262,8 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
         Task { @MainActor in
             self.coordinator?.stop()
             self.coordinator = nil
+            // Limpiar el flag de restauración para que la detención explícita impida el auto-arranque en la próxima apertura
+            UserDefaults.standard.removeObject(forKey: "BtLocationReporterPlugin.pendingRestore")
             LOG("Plugin stopped and coordinator released")
             call.resolve()
         }
