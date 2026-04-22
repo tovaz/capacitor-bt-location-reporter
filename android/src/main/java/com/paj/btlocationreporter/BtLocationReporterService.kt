@@ -393,15 +393,21 @@ class BtLocationReporterService : Service() {
         // Show local notification about BLE connection
         showBleConnectionNotification(deviceId, gatt.device?.name)
         
-        // Resume location updates when first device connects (if we have permission)
+        // Resume location updates when first device connects.
+        // El permiso de ubicación ya fue verificado en start() antes de lanzar el servicio.
         if (bleManager.connectedIds.size == 1) {
             if (hasLocationPermission()) {
                 resumeLocationUpdates()
-            } else if (!locationPermissionRequested) {
-                // First BLE connected but no location permission - request it now
-                locationPermissionRequested = true
-                LOG("[BtLocationReporterService] First BLE connected - requesting location permission")
-                BtLocationReporterPlugin.instance?.requestLocationPermissionFromService()
+            } else {
+                // No debería llegar aquí si start() validó el permiso correctamente.
+                LOG_ERROR("[BtLocationReporterService] BLE connected but no location permission — tracking not started")
+
+                if (!hasLocationPermission()) {
+                    // First BLE connected but no location permission - request it now
+                    locationPermissionRequested = true
+                    LOG("[BtLocationReporterService] First BLE connected - requesting location permission")
+                    BtLocationReporterPlugin.instance?.requestLocationPermissionFromService()
+                }
             }
         }
     }

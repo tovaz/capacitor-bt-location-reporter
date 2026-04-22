@@ -49,7 +49,7 @@ class BtLocationReporterPlugin : Plugin() {
 
     @PluginMethod
     fun start(call: PluginCall) {
-        LOG_INFO("[BtLocationReporterPlugin] start() called")
+        LOG_INFO("[BtLocationReporterPlugin] start() called — v2026-04-22 (pide BT+ubicacion antes de lanzar servicio)")
         
         val devicesArray = call.getArray("devices") ?: run {
             LOG_ERROR("[BtLocationReporterPlugin] devices array is required")
@@ -86,10 +86,10 @@ class BtLocationReporterPlugin : Plugin() {
         // Persist linked device IDs for BLE scan + PendingIntent in background
         LinkedDeviceStore.saveLinkedDevices(context, bleIds.toSet())
 
-        // Solo pedir permisos BT aquí (en start()), nunca al arrancar la app.
+        // 1. Verificar permisos BT (Android 12+) — nunca al arrancar, solo en start().
         if (!checkBluetoothPermissionsGranted()) {
             pendingStartCall = call
-            bridge.saveCall(call)  // Mantener la llamada viva mientras esperamos el diálogo
+            bridge.saveCall(call)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 ActivityCompat.requestPermissions(
                     activity,
@@ -97,6 +97,19 @@ class BtLocationReporterPlugin : Plugin() {
                     BT_PERMISSION_REQUEST_CODE
                 )
             }
+            return
+        }
+
+        // 2. Verificar permiso de ubicación — obligatorio en Android 14+ para arrancar un
+        //    foreground service con foregroundServiceType="location".
+        if (!checkLocationPermissionGranted()) {
+            pendingStartCall = call
+            bridge.saveCall(call)
+            ActivityCompat.requestPermissions(
+                activity,
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
+                LOCATION_PERMISSION_REQUEST_CODE
+            )
             return
         }
 
@@ -247,6 +260,18 @@ class BtLocationReporterPlugin : Plugin() {
                 if (granted) {
                     BtLocationReporterService.onLocationPermissionGranted()
                 }
+                // Si start() estaba esperando este permiso para lanzar el servicio, reintentarlo.
+                val savedStartCall = pendingStartCall
+                if (savedStartCall != null) {
+                    pendingStartCall = null
+                    bridge.releaseCall(savedStartCall)
+                    if (granted) {
+                        start(savedStartCall)
+                    } else {
+                        savedStartCall.reject("Location permission was not granted")
+                    }
+                }
+                // Resolver llamada explícita a requestLocationPermission() si la hubiera.
                 pendingLocationCall?.resolve(JSObject().put("granted", granted))
                 pendingLocationCall = null
             }
@@ -355,7 +380,7 @@ class BtLocationReporterPlugin : Plugin() {
             put("reason", "First BLE device connected - location permission needed to start tracking")
         })
     }
-    
+
     /**
      * Called by the service when first BLE device connects.
      * Automatically requests location permission from the user.
