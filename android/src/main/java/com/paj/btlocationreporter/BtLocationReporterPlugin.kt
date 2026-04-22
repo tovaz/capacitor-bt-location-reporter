@@ -88,6 +88,7 @@ class BtLocationReporterPlugin : Plugin() {
 
         // 1. Verificar permisos BT (Android 12+) — nunca al arrancar, solo en start().
         if (!checkBluetoothPermissionsGranted()) {
+            pendingStartCall?.let { bridge.releaseCall(it) }
             pendingStartCall = call
             bridge.saveCall(call)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -103,6 +104,7 @@ class BtLocationReporterPlugin : Plugin() {
         // 2. Verificar permiso de ubicación — obligatorio en Android 14+ para arrancar un
         //    foreground service con foregroundServiceType="location".
         if (!checkLocationPermissionGranted()) {
+            pendingStartCall?.let { bridge.releaseCall(it) }
             pendingStartCall = call
             bridge.saveCall(call)
             ActivityCompat.requestPermissions(
@@ -134,6 +136,11 @@ class BtLocationReporterPlugin : Plugin() {
     @PluginMethod
     fun stop(call: PluginCall) {
         LOG("[BtLocationReporterPlugin] stop() called")
+        // Limpiar calls pendientes para que handleRequestPermissionsResult
+        // no relance start() fantasma después de un stop().
+        pendingStartCall?.let { bridge.releaseCall(it) }
+        pendingStartCall = null
+        pendingLocationCall = null
         val intent = Intent(context, BtLocationReporterService::class.java).apply {
             action = BtLocationReporterService.ACTION_STOP
         }

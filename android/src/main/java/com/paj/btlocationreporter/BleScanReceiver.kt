@@ -49,11 +49,14 @@ class BleScanReceiver : BroadcastReceiver() {
                             putExtra("config_json", configJson)
                         }
 
-                        // Start Service
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                            context.startForegroundService(serviceIntent)
-                        } else {
-                            context.startService(serviceIntent)
+                        try {
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                context.startForegroundService(serviceIntent)
+                            } else {
+                                context.startService(serviceIntent)
+                            }
+                        } catch (e: Exception) {
+                            Log.e("BtLocationReporter", "[BleScanReceiver] Failed to start service: ${e.message}")
                         }
                     } else {
                         Log.i("BtLocationReporter", "[BleScanReceiver] BtLocationReporterService already running, not starting again.")
