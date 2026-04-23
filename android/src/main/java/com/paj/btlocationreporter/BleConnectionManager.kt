@@ -67,11 +67,19 @@ class BleConnectionManager(
     }
 
     private fun handleBluetoothOff() {
-        // Clear all connections
+        LOG("[BleConnectionManager] Bluetooth OFF — emitting disconnect for ${connectedIds.size} devices")
+        // Snapshot before clearing so we can notify each device
+        val snapshot = connectedIds.toList()
         connectedIds.clear()
-        //gattMap.values.forEach { it.close() }
+        snapshot.forEach { deviceId ->
+            val gatt = gattMap.remove(deviceId)
+            if (gatt != null) {
+                onDisconnected(deviceId, gatt)
+                runCatching { gatt.close() }
+            }
+        }
         gattMap.clear()
-        //onBluetoothOff?.invoke()
+        onBluetoothOff?.invoke()
     }
 
     // ── Public API ────────────────────────────────────────────────────────
@@ -224,9 +232,12 @@ class BleConnectionManager(
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     LOG("[BleConnectionManager] Disconnected: ${gatt.device?.name ?: deviceId}")
-                    connectedIds.remove(deviceId)
+                    // wasConnected = false means handleBluetoothOff() already emitted the event
+                    val wasConnected = connectedIds.remove(deviceId)
                     val cachedGatt = gattMap.remove(deviceId)
-                    onDisconnected(deviceId, cachedGatt ?: gatt)
+                    if (wasConnected) {
+                        onDisconnected(deviceId, cachedGatt ?: gatt)
+                    }
                     runCatching { gatt.disconnect() }
                     runCatching { gatt.close() }
                     scheduleReconnect(deviceId)

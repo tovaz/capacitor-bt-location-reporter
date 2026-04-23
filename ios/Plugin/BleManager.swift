@@ -247,10 +247,16 @@ extension BleManager: CBCentralManagerDelegate {
             LOG_ERROR("[BleManager] BT unauthorized")
         } else if central.state == .poweredOff {
             LOG_ERROR("[BleManager] BT OFF")
-            // Clear all connections when BT turns off
-            let wasConnected = !connectedIds.isEmpty
+            // Snapshot before clearing so we can notify each device
+            let snapshot = connectedIds
             connectedIds.removeAll()
-            if wasConnected {
+            for deviceId in snapshot {
+                if let uuid = UUID(uuidString: deviceId),
+                   let peripheral = peripheralMap[uuid] {
+                    onDisconnected(deviceId, peripheral)
+                }
+            }
+            if !snapshot.isEmpty {
                 onBluetoothOff?()
             }
         }
@@ -282,8 +288,12 @@ extension BleManager: CBCentralManagerDelegate {
                         error: Error?) {
         let id = peripheral.identifier.uuidString
         LOG("[BleManager] Disconnected: \(peripheral.name ?? id)")
+        // wasConnected = false means centralManagerDidUpdateState(.poweredOff) already emitted the event
+        let wasConnected = connectedIds.contains(id)
         connectedIds.removeAll { $0 == id }
-        onDisconnected(id, peripheral)
+        if wasConnected {
+            onDisconnected(id, peripheral)
+        }
         scheduleReconnect(peripheral)
     }
 
