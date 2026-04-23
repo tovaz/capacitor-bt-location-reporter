@@ -5,6 +5,8 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.getcapacitor.JSObject
@@ -130,6 +132,7 @@ class BtLocationReporterPlugin : Plugin() {
             configJson = configJson
         )
         LOG_INFO("[BtLocationReporterPlugin] start() completed")
+        bridge.releaseCall(call)
         call.resolve()
     }
 
@@ -253,10 +256,13 @@ class BtLocationReporterPlugin : Plugin() {
                 val savedCall = pendingStartCall
                 pendingStartCall = null
                 if (savedCall != null) {
-                    bridge.releaseCall(savedCall)
                     if (granted) {
-                        start(savedCall)
+                        // Defer start() so it runs AFTER onRequestPermissionsResult returns.
+                        // Calling requestPermissions() from within onRequestPermissionsResult
+                        // is silently ignored on many Android OEM skins (Samsung, Xiaomi, etc.).
+                        Handler(Looper.getMainLooper()).post { start(savedCall) }
                     } else {
+                        bridge.releaseCall(savedCall)
                         savedCall.reject("Bluetooth permissions were not granted")
                     }
                 }
@@ -271,10 +277,12 @@ class BtLocationReporterPlugin : Plugin() {
                 val savedStartCall = pendingStartCall
                 if (savedStartCall != null) {
                     pendingStartCall = null
-                    bridge.releaseCall(savedStartCall)
                     if (granted) {
+                        // All permissions now granted — launch the service.
+                        // releaseCall happens inside start() path after resolve().
                         start(savedStartCall)
                     } else {
+                        bridge.releaseCall(savedStartCall)
                         savedStartCall.reject("Location permission was not granted")
                     }
                 }
