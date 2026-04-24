@@ -1,5 +1,5 @@
 import { WebPlugin } from '@capacitor/core';
-import type { BtDeviceEntry, BtLocationConfig, BtLocationReporterPlugin } from './definitions';
+import type { BtDeviceEntry, BtLocationConfig, BtLocationReporterPlugin, LiveTrackingSession } from './definitions';
 export declare class BtLocationReporterWeb extends WebPlugin implements BtLocationReporterPlugin {
     private warn;
     start(_options: BtLocationConfig): Promise<void>;
@@ -31,4 +31,15 @@ export declare class BtLocationReporterWeb extends WebPlugin implements BtLocati
         characteristic: string;
         value: number[];
     }): Promise<void>;
+    startLiveTracking(_options: {
+        pajDeviceId: string | number;
+        intervalSec: number;
+        durationSec: number;
+    }): Promise<void>;
+    stopLiveTracking(_options?: {
+        pajDeviceId?: string | number;
+    }): Promise<void>;
+    getLiveTrackingDevices(): Promise<{
+        devices: LiveTrackingSession[];
+    }>;
 }

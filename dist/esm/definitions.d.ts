@@ -111,6 +111,44 @@ export interface LocationPermissionRequiredEvent {
     reason: string;
 }
 /**
+ * Live tracking session for a specific pajDeviceId.
+ * Temporarily shortens the GPS reporting interval for a limited time window.
+ * Sessions are kept in memory only (non-persistent).
+ */
+export interface LiveTrackingSession {
+    /** PAJ device id the session is bound to */
+    pajDeviceId: string | number;
+    /** Shortened reporting interval in seconds */
+    intervalSec: number;
+    /** Total duration of the session in seconds */
+    durationSec: number;
+    /** Seconds remaining before the session auto-expires */
+    remainingSec: number;
+    /** Epoch ms timestamp when the session was started */
+    startedAt: number;
+    /** Epoch ms timestamp when the session will expire */
+    expiresAt: number;
+}
+/**
+ * Event emitted when a live tracking session is started for a device.
+ */
+export interface LiveTrackingStartedEvent {
+    pajDeviceId: string | number;
+    intervalSec: number;
+    durationSec: number;
+    startedAt: number;
+    expiresAt: number;
+}
+/**
+ * Event emitted when a live tracking session is stopped.
+ * If `pajDeviceId` is null, every active session was stopped at once.
+ * `reason` indicates whether it was a manual stop or an automatic expiration.
+ */
+export interface LiveTrackingStoppedEvent {
+    pajDeviceId: string | number | null;
+    reason: 'manual' | 'expired' | 'stopAll';
+}
+/**
  * Main plugin interface.
  */
 export interface BtLocationReporterPlugin {
@@ -191,6 +229,19 @@ export interface BtLocationReporterPlugin {
         remove: () => void;
     }>;
     /**
+     * Fired when a live tracking session is successfully started.
+     */
+    addListener(eventName: 'liveTrackingStarted', listenerFunc: (event: LiveTrackingStartedEvent) => void): Promise<{
+        remove: () => void;
+    }>;
+    /**
+     * Fired when a live tracking session is stopped — either manually,
+     * automatically after duration elapses, or as part of a stopAll call.
+     */
+    addListener(eventName: 'liveTrackingStopped', listenerFunc: (event: LiveTrackingStoppedEvent) => void): Promise<{
+        remove: () => void;
+    }>;
+    /**
      * Remove all native event listeners.
      */
     removeAllListeners(): Promise<void>;
@@ -210,4 +261,52 @@ export interface BtLocationReporterPlugin {
         characteristic: string;
         value: number[];
     }): Promise<void>;
+    /**
+     * Temporarily reduces the GPS reporting interval for a specific device.
+     *
+     * Live tracking sessions are kept in memory only — they are NOT persisted
+     * and will not survive a `stop()` call or a process death.
+     *
+     * While any live tracking session is active the effective reporting
+     * interval used by the running service becomes the minimum between the
+     * default `reportIntervalMs` and every active session interval.
+     *
+     * Starting a session for the same `pajDeviceId` twice overrides the
+     * previous session.
+     *
+     * Emits the `liveTrackingStarted` event on success.
+     *
+     * @param options.pajDeviceId   PAJ device id the session is bound to.
+     * @param options.intervalSec   Shortened reporting interval in seconds.
+     * @param options.durationSec   How long the session should run, in seconds.
+     *                              After this time the session auto-stops and
+     *                              `liveTrackingStopped` is emitted with
+     *                              `reason: 'expired'`.
+     */
+    startLiveTracking(options: {
+        pajDeviceId: string | number;
+        intervalSec: number;
+        durationSec: number;
+    }): Promise<void>;
+    /**
+     * Stops a live tracking session.
+     *
+     * - When called with `{ pajDeviceId }`, stops only that device's session
+     *   and emits `liveTrackingStopped` with `reason: 'manual'`.
+     * - When called without arguments (or with an empty object), stops every
+     *   active live tracking session and emits `liveTrackingStopped` with
+     *   `reason: 'stopAll'` and `pajDeviceId: null`.
+     *
+     * Returns silently when there is nothing to stop (no crash, no reject).
+     */
+    stopLiveTracking(options?: {
+        pajDeviceId?: string | number;
+    }): Promise<void>;
+    /**
+     * Returns the list of currently active live tracking sessions, including
+     * how many seconds each session has left before auto-expiring.
+     */
+    getLiveTrackingDevices(): Promise<{
+        devices: LiveTrackingSession[];
+    }>;
 }

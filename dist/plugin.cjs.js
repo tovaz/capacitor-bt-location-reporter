@@ -47,6 +47,15 @@ class BtLocationReporterWeb extends core.WebPlugin {
     async writeWithoutResponse(_options) {
         this.warn();
     }
+    async startLiveTracking(_options) {
+        this.warn();
+    }
+    async stopLiveTracking(_options) {
+        this.warn();
+    }
+    async getLiveTrackingDevices() {
+        return { devices: [] };
+    }
 }
 
 var web = /*#__PURE__*/Object.freeze({

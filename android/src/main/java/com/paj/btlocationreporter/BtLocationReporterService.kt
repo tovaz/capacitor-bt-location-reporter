@@ -26,6 +26,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.getcapacitor.JSObject
 import com.google.android.gms.location.*
+import com.paj.btlocationreporter.livetracking.LiveTrackingManager
+import com.paj.btlocationreporter.livetracking.LiveTrackingServiceBridge
 import kotlinx.coroutines.*
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
@@ -134,6 +136,11 @@ class BtLocationReporterService : Service() {
     private var lastReportTime           = 0L
     private var isLocationTracking       = false
     private var locationPermissionRequested = false
+
+    // Bridge between [LiveTrackingManager] and this service. Non-null while the
+    // service is alive; used to reconfigure location updates when a live
+    // tracking session starts, stops or expires.
+    private var liveTrackingBridge: LiveTrackingServiceBridge? = null
 
     // ── Connectivity & location-state monitoring ──────────────────────────
 
@@ -265,6 +272,11 @@ class BtLocationReporterService : Service() {
 
         isRunning       = true
         serviceInstance = this
+
+        // Wire the LiveTrackingManager to this service so temporary interval
+        // overrides can reconfigure the FusedLocation request at runtime.
+        liveTrackingBridge = LiveTrackingServiceBridge { reconfigureLocationUpdates() }
+        LiveTrackingManager.listener = liveTrackingBridge
 
         // ── Init params ───────────────────────────────────────────────────
         endpoint   = intent.getStringExtra(EXTRA_ENDPOINT)    ?: ""
@@ -505,6 +517,13 @@ class BtLocationReporterService : Service() {
         isLocationTracking          = false
         locationPermissionRequested = false
         serviceInstance             = null
+        // Tear down live tracking state — sessions are intentionally not
+        // persisted, so stopping the service also clears them.
+        runCatching {
+            LiveTrackingManager.listener = null
+            LiveTrackingManager.clear()
+            liveTrackingBridge = null
+        }
         serviceScope.cancel()
         stopMonitoring()
         if (::bleManager.isInitialized)  bleManager.stop()
@@ -578,14 +597,36 @@ class BtLocationReporterService : Service() {
         if (!::fusedClient.isInitialized) {
             fusedClient = LocationServices.getFusedLocationProviderClient(this)
         }
-        val interval = if (intervalMs > 0) intervalMs else 10_000L
+        // Combine the default reporting interval with any active live tracking
+        // session so the location provider uses the shortest requested interval.
+        val effective = LiveTrackingManager.getEffectiveIntervalMs(intervalMs)
+        val interval = if (effective > 0) effective else 10_000L
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, interval)
             .setMinUpdateIntervalMillis(interval)
-            .setMinUpdateDistanceMeters(10f)
+            .setMinUpdateDistanceMeters(0f)
             .build()
         fusedClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
         isLocationTracking = true
-        LOG("[BtLocationReporterService] Location updates started (interval=${interval}ms)")
+        LOG("[BtLocationReporterService] Location updates started (interval=${interval}ms, liveTrackingActive=${LiveTrackingManager.hasActiveSessions()})")
+    }
+
+    /**
+     * Re-requests location updates with the current effective interval.
+     * Called by [LiveTrackingServiceBridge] whenever a live tracking session
+     * is started, stopped or expires. No-op when location tracking is paused.
+     */
+    @SuppressLint("MissingPermission")
+    private fun reconfigureLocationUpdates() {
+        if (!isLocationTracking) return
+        try {
+            if (::fusedClient.isInitialized) {
+                fusedClient.removeLocationUpdates(locationCallback)
+            }
+            isLocationTracking = false
+            startLocationUpdates()
+        } catch (e: Exception) {
+            LOG_ERROR("[BtLocationReporterService] reconfigureLocationUpdates failed: ${e.message}")
+        }
     }
 
     private fun pauseLocationUpdates() {
@@ -608,7 +649,10 @@ class BtLocationReporterService : Service() {
         if (connectedIds.isEmpty()) return
 
         val now = System.currentTimeMillis()
-        if (now - lastReportTime < intervalMs) return
+        // Throttle HTTP reports against the live-tracking-aware effective interval
+        // so active sessions can legitimately post more frequently.
+        val effectiveInterval = LiveTrackingManager.getEffectiveIntervalMs(intervalMs)
+        if (now - lastReportTime < effectiveInterval) return
         lastReportTime = now
 
         postLocationReport(location, connectedIds)

@@ -46,6 +46,15 @@ var TovazCapacitorBtLocationReporter = (function (exports, core) {
         async writeWithoutResponse(_options) {
             this.warn();
         }
+        async startLiveTracking(_options) {
+            this.warn();
+        }
+        async stopLiveTracking(_options) {
+            this.warn();
+        }
+        async getLiveTrackingDevices() {
+            return { devices: [] };
+        }
     }
 
     var web = /*#__PURE__*/Object.freeze({

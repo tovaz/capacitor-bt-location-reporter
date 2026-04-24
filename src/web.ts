@@ -3,6 +3,7 @@ import type {
   BtDeviceEntry,
   BtLocationConfig,
   BtLocationReporterPlugin,
+  LiveTrackingSession,
 } from './definitions';
 
 export class BtLocationReporterWeb
@@ -58,5 +59,23 @@ export class BtLocationReporterWeb
     value: number[];
   }): Promise<void> {
     this.warn();
+  }
+
+  async startLiveTracking(_options: {
+    pajDeviceId: string | number;
+    intervalSec: number;
+    durationSec: number;
+  }): Promise<void> {
+    this.warn();
+  }
+
+  async stopLiveTracking(_options?: {
+    pajDeviceId?: string | number;
+  }): Promise<void> {
+    this.warn();
+  }
+
+  async getLiveTrackingDevices(): Promise<{ devices: LiveTrackingSession[] }> {
+    return { devices: [] };
   }
 }

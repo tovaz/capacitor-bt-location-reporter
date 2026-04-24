@@ -21,6 +21,9 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "requestLocationPermission", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "hasLocationPermission",     returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "writeWithoutResponse",      returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "startLiveTracking",         returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "stopLiveTracking",          returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getLiveTrackingDevices",    returnType: CAPPluginReturnPromise),
     ]
 
     private var coordinator: BtLocationReporter?
@@ -292,11 +295,19 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
             )
         }
         Task { @MainActor in
-            self.coordinator?.addDevices(entries)
-            // Actualizar config en el store local
+            // Collapse internal duplicates in the incoming batch (last-wins)
+            // before passing it down so the coordinator, GpsSwitcher and
+            // BleManager never see the same id twice in a single call.
+            let dedupedIncoming = DeviceEntryDedup.lastWins(entries)
+            self.coordinator?.addDevices(dedupedIncoming)
+            // Update the locally persisted config using replace-by-bleDeviceId
+            // semantics: any existing device whose id shows up in the new
+            // batch is dropped, then the new (deduped) entries are appended
+            // at the end — the most recent call always wins.
             if let current = self.coordinator?.config {
+                let merged = DeviceEntryDedup.merge(existing: current.devices, incoming: dedupedIncoming)
                 let newConfig = BtLocationConfig(
-                    devices: current.devices + entries,
+                    devices: merged,
                     endpoint: current.endpoint,
                     authToken: current.authToken,
                     intervalMs: current.intervalMs,
@@ -368,6 +379,34 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
         notifyListeners("locationPermissionRequired", data: [
             "reason": "First BLE device connected - location permission needed to start tracking"
         ])
+    }
+
+    /// Emits a `liveTrackingStarted` event to JS. Called by the bridge.
+    func emitLiveTrackingStarted(session: LiveTrackingManager.Session) {
+        let startedAtMs = Int64(session.startedAt.timeIntervalSince1970 * 1_000)
+        let expiresAtMs = Int64(session.expiresAt.timeIntervalSince1970 * 1_000)
+        let payload: [String: Any] = [
+            "pajDeviceId": session.pajDeviceId,
+            "intervalSec": session.intervalSec,
+            "durationSec": session.durationSec,
+            "startedAt":   startedAtMs,
+            "expiresAt":   expiresAtMs,
+        ]
+        notifyListeners("liveTrackingStarted", data: payload)
+    }
+
+    /// Emits a `liveTrackingStopped` event to JS. Called by the bridge.
+    /// `pajDeviceId` is `nil` only when `reason == "stopAll"`.
+    func emitLiveTrackingStopped(pajDeviceId: String?, reason: String) {
+        // Capacitor's NSDictionary → JSON bridge drops nil values, so we
+        // send NSNull explicitly to preserve `pajDeviceId: null` on the JS
+        // side (matches the TS type `string | number | null`).
+        let pajValue: Any = pajDeviceId ?? NSNull()
+        let payload: [String: Any] = [
+            "pajDeviceId": pajValue,
+            "reason": reason,
+        ]
+        notifyListeners("liveTrackingStopped", data: payload)
     }
     
     // ── Debug methods ─────────────────────────────────────────────────────
@@ -447,8 +486,129 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    // ── Live tracking ─────────────────────────────────────────────────────
+
+    /**
+     * Starts a temporary live tracking session for a specific pajDeviceId.
+     * The session is kept in memory only and auto-expires after the
+     * requested duration. Requires the coordinator to be running.
+     */
+    @objc func startLiveTracking(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            guard self.coordinator?.isRunning == true else {
+                call.reject("Service not running — call start() first")
+                return
+            }
+            guard let pajId = self.readPajDeviceId(call), !pajId.isEmpty else {
+                call.reject("pajDeviceId is required")
+                return
+            }
+            let intervalSec = self.readDouble(call, key: "intervalSec") ?? 0
+            let durationSec = self.readDouble(call, key: "durationSec") ?? 0
+            guard intervalSec > 0 else {
+                call.reject("intervalSec must be > 0")
+                return
+            }
+            guard durationSec > 0 else {
+                call.reject("durationSec must be > 0")
+                return
+            }
+
+            LOG("[BtLocationReporterPlugin] startLiveTracking pajDeviceId=\(pajId) intervalSec=\(intervalSec) durationSec=\(durationSec)")
+            let session = LiveTrackingManager.shared.start(
+                pajDeviceId: pajId,
+                intervalSec: intervalSec,
+                durationSec: durationSec
+            )
+            if session == nil {
+                call.reject("Failed to start live tracking session")
+                return
+            }
+            // Apply the new interval immediately and synchronously.
+            // The LiveTrackingCoordinatorBridge also schedules an async Task for
+            // this, but calling it directly here guarantees it runs before
+            // call.resolve() and is not subject to Task scheduling delays.
+            self.coordinator?.applyEffectiveInterval()
+            call.resolve()
+        }
+    }
+
+    /**
+     * Stops a live tracking session. When called without `pajDeviceId` (or
+     * with an empty one), every active session is stopped in a single
+     * `stopAll` event.
+     */
+    @objc func stopLiveTracking(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            let pajId = self.readPajDeviceId(call)
+            if let pajId = pajId, !pajId.isEmpty {
+                let ok = LiveTrackingManager.shared.stopForDevice(pajDeviceId: pajId)
+                LOG("[BtLocationReporterPlugin] stopLiveTracking pajDeviceId=\(pajId) stopped=\(ok)")
+            } else {
+                let count = LiveTrackingManager.shared.stopAll()
+                LOG("[BtLocationReporterPlugin] stopLiveTracking stopped all (\(count) sessions)")
+            }
+            // Restore the default interval immediately after the session ends.
+            self.coordinator?.applyEffectiveInterval()
+            call.resolve()
+        }
+    }
+
+    /**
+     * Returns every currently active live tracking session along with the
+     * number of seconds remaining before each one auto-expires.
+     */
+    @objc func getLiveTrackingDevices(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            let snapshot = LiveTrackingManager.shared.snapshot()
+            let devices: [[String: Any]] = snapshot.map { s in
+                let startedAtMs = Int64(s.startedAt.timeIntervalSince1970 * 1_000)
+                let expiresAtMs = Int64(s.expiresAt.timeIntervalSince1970 * 1_000)
+                return [
+                    "pajDeviceId":  s.pajDeviceId,
+                    "intervalSec":  s.intervalSec,
+                    "durationSec":  s.durationSec,
+                    "remainingSec": s.remainingSec,
+                    "startedAt":    startedAtMs,
+                    "expiresAt":    expiresAtMs,
+                ]
+            }
+            call.resolve(["devices": devices])
+        }
+    }
+
+    /**
+     * Accepts `pajDeviceId` as either string or number (Int / Double) and
+     * normalizes it to a non-empty trimmed string. Returns `nil` when the
+     * value is absent or cannot be parsed.
+     */
+    private func readPajDeviceId(_ call: CAPPluginCall) -> String? {
+        if let s = call.getString("pajDeviceId") {
+            let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        if let i = call.getInt("pajDeviceId") {
+            return String(i)
+        }
+        if let d = call.getDouble("pajDeviceId") {
+            // JS Numbers arrive as Double; integer values should not
+            // serialize as "42.0", so coerce to Int64 when whole.
+            if d == d.rounded() { return String(Int64(d)) }
+            return String(d)
+        }
+        return nil
+    }
+
+    /// Reads a number from a Capacitor call as `Double`, accepting both
+    /// Int and Double representations coming from the JS layer.
+    private func readDouble(_ call: CAPPluginCall, key: String) -> Double? {
+        if let d = call.getDouble(key) { return d }
+        if let i = call.getInt(key) { return Double(i) }
+        return nil
+    }
+
     // ── Helper methods ────────────────────────────────────────────────────
-    
+
     private func parseCommand(_ value: Any?) -> BleCommand? {
         // Capacitor sends nested objects as JSObject ([String: JSValue]) or as NSDictionary
         // We need to handle both cases

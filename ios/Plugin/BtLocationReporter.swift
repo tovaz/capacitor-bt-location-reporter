@@ -44,7 +44,52 @@ struct BtLocationConfig {
     let debug: Bool
     let texts: NotificationTexts
     var bleDeviceIds: [String] { devices.map { $0.bleDeviceId } }
-    var pajIdMap: [String: String] { Dictionary(uniqueKeysWithValues: devices.map { ($0.bleDeviceId, $0.pajDeviceId) }) }
+    /// Map from `bleDeviceId` to `pajDeviceId`. Uses `uniquingKeysWith:` to
+    /// tolerate accidental duplicates in `devices` (e.g. when `addDevices`
+    /// is called with an entry whose `bleDeviceId` was already present);
+    /// the latest entry wins. `Dictionary(uniqueKeysWithValues:)` would
+    /// crash on duplicates with "Fatal error: Duplicate values for key".
+    var pajIdMap: [String: String] {
+        Dictionary(
+            devices.map { ($0.bleDeviceId, $0.pajDeviceId) },
+            uniquingKeysWith: { _, new in new }
+        )
+    }
+}
+
+/// Internal helpers for deduplicating device entries by `bleDeviceId`.
+/// Centralized here so `start()`, `addDevices()` and future call sites
+/// behave the same way: if the same `bleDeviceId` appears more than once,
+/// the last occurrence wins.
+enum DeviceEntryDedup {
+
+    /// Collapses `entries` so each `bleDeviceId` appears exactly once.
+    /// When the same id shows up multiple times within the same list, the
+    /// later entry replaces the earlier one. Relative order of first
+    /// appearance is preserved.
+    static func lastWins(_ entries: [BtDeviceEntry]) -> [BtDeviceEntry] {
+        var byId: [String: BtDeviceEntry] = [:]
+        var order: [String] = []
+        for e in entries {
+            if byId[e.bleDeviceId] == nil {
+                order.append(e.bleDeviceId)
+            }
+            byId[e.bleDeviceId] = e
+        }
+        return order.compactMap { byId[$0] }
+    }
+
+    /// Merges `incoming` into `existing` using "last wins" semantics: any
+    /// existing entry whose `bleDeviceId` appears in `incoming` is removed,
+    /// then the (already deduped) `incoming` list is appended at the end.
+    /// The internal order within `incoming` is also collapsed to last-wins.
+    static func merge(existing: [BtDeviceEntry],
+                      incoming: [BtDeviceEntry]) -> [BtDeviceEntry] {
+        let incomingDeduped = lastWins(incoming)
+        let incomingIds = Set(incomingDeduped.map { $0.bleDeviceId })
+        let kept = existing.filter { !incomingIds.contains($0.bleDeviceId) }
+        return kept + incomingDeduped
+    }
 }
 
 /**
@@ -68,6 +113,11 @@ class BtLocationReporter: NSObject {
     private var gpsSwitcher: GpsSwitcher?
     private var dynamicPajIdMap: [String: String] = [:]
     private var locationPermissionRequested = false
+
+    /// Retained bridge that feeds `LiveTrackingManager` events back into the
+    /// plugin (for JS emission) and into `applyEffectiveInterval()` (for
+    /// reconfiguring the `LocationReporter` throttle).
+    private var liveTrackingBridge: LiveTrackingCoordinatorBridge?
 
     init(plugin: BtLocationReporterPlugin) {
         self.plugin = plugin
@@ -102,6 +152,20 @@ class BtLocationReporter: NSObject {
                 self?.onNewLocation(location)
             }
         }
+
+        // 1.b. Wire up the live tracking bridge so shortened intervals take
+        //      effect on the running LocationReporter and JS listeners get
+        //      `liveTrackingStarted` / `liveTrackingStopped` events.
+        let bridge = LiveTrackingCoordinatorBridge(
+            plugin: plugin,
+            onIntervalChanged: { [weak self] in
+                Task { @MainActor in self?.applyEffectiveInterval() }
+            }
+        )
+        self.liveTrackingBridge = bridge
+        LiveTrackingManager.shared.listener = bridge
+        // Make sure any leftover sessions from a previous start are gone.
+        LiveTrackingManager.shared.clear()
         
         // 2. Setup GPS Switcher for GATT commands
         self.gpsSwitcher = GpsSwitcher()
@@ -152,16 +216,45 @@ class BtLocationReporter: NSObject {
         locationMgr = nil
         gpsSwitcher?.cleanup()
         gpsSwitcher = nil
+
+        // Tear down the live tracking bridge so no residual timers or
+        // listeners survive the stop. All sessions are explicitly cleared
+        // (in-memory only — nothing is persisted).
+        if LiveTrackingManager.shared.listener === liveTrackingBridge {
+            LiveTrackingManager.shared.listener = nil
+        }
+        LiveTrackingManager.shared.clear()
+        liveTrackingBridge = nil
+
         LOG("[BtLocationReporter] Stopped")
     }
 
+    // MARK: - Live tracking helpers
+
+    /**
+     * Re-applies the effective reporting interval (minimum of the
+     * configured default and every active live-tracking session) to the
+     * running `LocationReporter`. Safe to call from any state — if the
+     * location manager is not yet initialized this is a no-op.
+     */
+    func applyEffectiveInterval() {
+        guard let defaultMs = config?.intervalMs else { return }
+        let effectiveMs = LiveTrackingManager.shared.getEffectiveIntervalMs(defaultMs: defaultMs)
+        locationMgr?.setReportInterval(ms: effectiveMs)
+        LOG("[BtLocationReporter] effective report interval = \(effectiveMs)ms (default=\(defaultMs)ms)")
+    }
+
     func addDevices(_ entries: [BtDeviceEntry]) {
-        bleManager?.addDevices(entries.map { $0.bleDeviceId })
-        entries.forEach {
+        // Defensive: even if the caller already deduped, collapse one more
+        // time so downstream components (BleManager, GpsSwitcher) never see
+        // the same bleDeviceId twice in a single batch.
+        let deduped = DeviceEntryDedup.lastWins(entries)
+        bleManager?.addDevices(deduped.map { $0.bleDeviceId })
+        deduped.forEach {
             dynamicPajIdMap[$0.bleDeviceId] = $0.pajDeviceId
             gpsSwitcher?.registerDevice(bleDeviceId: $0.bleDeviceId, onConnect: $0.onConnectCommand, onDisconnect: $0.onDisconnectCommand)
         }
-        LOG("[BtLocationReporter] Added \(entries.count) devices")
+        LOG("[BtLocationReporter] Added \(deduped.count) devices (last-wins dedup)")
     }
 
     func writeWithoutResponse(deviceId: String,

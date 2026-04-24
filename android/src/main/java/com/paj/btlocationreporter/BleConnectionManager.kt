@@ -58,9 +58,15 @@ class BleConnectionManager(
         override fun onReceive(ctx: Context?, intent: Intent?) {
             if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
                 val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
-                if (state == BluetoothAdapter.STATE_OFF || state == BluetoothAdapter.STATE_TURNING_OFF) {
-                    LOG("[BleConnectionManager] Bluetooth OFF detected")
-                    handleBluetoothOff()
+                when (state) {
+                    BluetoothAdapter.STATE_OFF, BluetoothAdapter.STATE_TURNING_OFF -> {
+                        LOG("[BleConnectionManager] Bluetooth OFF detected")
+                        handleBluetoothOff()
+                    }
+                    BluetoothAdapter.STATE_ON -> {
+                        LOG("[BleConnectionManager] Bluetooth ON detected — reconnecting ${targetIds.size} devices")
+                        targetIds.forEach { connectDevice(it) }
+                    }
                 }
             }
         }

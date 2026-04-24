@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -17,6 +18,7 @@ import com.getcapacitor.annotation.CapacitorPlugin
 
 import com.paj.btlocationreporter.LinkedDeviceStore
 import com.paj.btlocationreporter.ConfigStore
+import com.paj.btlocationreporter.livetracking.LiveTrackingManager
 import org.json.JSONObject
 import java.util.UUID
 
@@ -36,6 +38,8 @@ class BtLocationReporterPlugin : Plugin() {
         const val EVENT_LOCATION_REPORT = "locationReport"
         const val EVENT_BLE_CONNECTION  = "bleConnection"
         const val EVENT_LOCATION_PERMISSION_REQUIRED = "locationPermissionRequired"
+        const val EVENT_LIVE_TRACKING_STARTED = "liveTrackingStarted"
+        const val EVENT_LIVE_TRACKING_STOPPED = "liveTrackingStopped"
 
         var instance: BtLocationReporterPlugin? = null
     }
@@ -415,6 +419,164 @@ class BtLocationReporterPlugin : Plugin() {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
             LOCATION_PERMISSION_REQUEST_CODE
         )
+    }
+
+    // ── Live tracking ─────────────────────────────────────────────────────
+
+    /**
+     * Starts a temporary live tracking session for a specific pajDeviceId.
+     * The session is kept in memory only and auto-expires after the
+     * requested duration. Requires the background service to be running.
+     */
+    @PluginMethod
+    fun startLiveTracking(call: PluginCall) {
+        try {
+            if (!BtLocationReporterService.isRunning) {
+                call.reject("Service not running — call start() first")
+                return
+            }
+            val pajId = readPajDeviceId(call)
+            if (pajId.isNullOrBlank()) {
+                call.reject("pajDeviceId is required")
+                return
+            }
+            val intervalSec = readLongArg(call, "intervalSec") ?: 0L
+            val durationSec = readLongArg(call, "durationSec") ?: 0L
+            if (intervalSec <= 0L) {
+                call.reject("intervalSec must be > 0")
+                return
+            }
+            if (durationSec <= 0L) {
+                call.reject("durationSec must be > 0")
+                return
+            }
+
+            LOG("[BtLocationReporterPlugin] startLiveTracking pajDeviceId=$pajId intervalSec=$intervalSec durationSec=$durationSec")
+            val session = LiveTrackingManager.start(pajId, intervalSec, durationSec)
+            if (session == null) {
+                call.reject("Failed to start live tracking session")
+                return
+            }
+            call.resolve()
+        } catch (e: Exception) {
+            LOG_ERROR("[BtLocationReporterPlugin] startLiveTracking failed: ${e.message}")
+            call.reject(e.message ?: "startLiveTracking failed")
+        }
+    }
+
+    /**
+     * Stops a live tracking session. When the `pajDeviceId` argument is
+     * omitted (or null/empty) every active session is stopped.
+     */
+    @PluginMethod
+    fun stopLiveTracking(call: PluginCall) {
+        try {
+            val pajId = readPajDeviceId(call)
+            if (pajId.isNullOrBlank()) {
+                val count = LiveTrackingManager.stopAll()
+                LOG("[BtLocationReporterPlugin] stopLiveTracking stopped all ($count sessions)")
+            } else {
+                val ok = LiveTrackingManager.stopForDevice(pajId)
+                LOG("[BtLocationReporterPlugin] stopLiveTracking pajDeviceId=$pajId stopped=$ok")
+            }
+            call.resolve()
+        } catch (e: Exception) {
+            LOG_ERROR("[BtLocationReporterPlugin] stopLiveTracking failed: ${e.message}")
+            call.reject(e.message ?: "stopLiveTracking failed")
+        }
+    }
+
+    /**
+     * Returns all currently active live tracking sessions, including how many
+     * seconds each one has left before auto-expiring.
+     */
+    @PluginMethod
+    fun getLiveTrackingDevices(call: PluginCall) {
+        try {
+            val devices = JSArray()
+            for (s in LiveTrackingManager.snapshot()) {
+                val obj = JSObject()
+                obj.put("pajDeviceId", s.pajDeviceId)
+                obj.put("intervalSec", s.intervalSec)
+                obj.put("durationSec", s.durationSec)
+                obj.put("remainingSec", s.remainingSec)
+                obj.put("startedAt", s.startedAtMs)
+                obj.put("expiresAt", s.expiresAtMs)
+                devices.put(obj)
+            }
+            val result = JSObject()
+            result.put("devices", devices)
+            call.resolve(result)
+        } catch (e: Exception) {
+            LOG_ERROR("[BtLocationReporterPlugin] getLiveTrackingDevices failed: ${e.message}")
+            call.reject(e.message ?: "getLiveTrackingDevices failed")
+        }
+    }
+
+    /**
+     * Accepts `pajDeviceId` as either string or number and normalizes it
+     * to a non-blank trimmed string. Returns null when the value is absent
+     * or cannot be parsed.
+     */
+    private fun readPajDeviceId(call: PluginCall): String? {
+        return try {
+            val asString = call.getString("pajDeviceId")
+            if (!asString.isNullOrBlank()) return asString.trim()
+            val asInt = call.getInt("pajDeviceId")
+            if (asInt != null) return asInt.toString()
+            val asLong = call.getLong("pajDeviceId")
+            if (asLong != null) return asLong.toString()
+            val asDouble = call.getDouble("pajDeviceId")
+            if (asDouble != null) return asDouble.toLong().toString()
+            null
+        } catch (e: Exception) {
+            LOG_ERROR("[BtLocationReporterPlugin] readPajDeviceId failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Reads a Long value from the Capacitor call, accepting either an Int,
+     * a Long or a Double that originated in JS as a Number.
+     */
+    private fun readLongArg(call: PluginCall, key: String): Long? {
+        return try {
+            call.getLong(key)
+                ?: call.getInt(key)?.toLong()
+                ?: call.getDouble(key)?.toLong()
+        } catch (e: Exception) {
+            LOG_ERROR("[BtLocationReporterPlugin] readLongArg($key) failed: ${e.message}")
+            null
+        }
+    }
+
+    /** Emits a `liveTrackingStarted` event to JS. Called by the manager listener. */
+    fun notifyLiveTrackingStarted(session: LiveTrackingManager.Session) {
+        try {
+            val payload = JSObject().apply {
+                put("pajDeviceId", session.pajDeviceId)
+                put("intervalSec", session.intervalSec)
+                put("durationSec", session.durationSec)
+                put("startedAt",   session.startedAtMs)
+                put("expiresAt",   session.expiresAtMs)
+            }
+            notifyListeners(EVENT_LIVE_TRACKING_STARTED, payload)
+        } catch (e: Exception) {
+            LOG_ERROR("[BtLocationReporterPlugin] notifyLiveTrackingStarted failed: ${e.message}")
+        }
+    }
+
+    /** Emits a `liveTrackingStopped` event to JS. Called by the manager listener. */
+    fun notifyLiveTrackingStopped(pajDeviceId: String?, reason: String) {
+        try {
+            val payload = JSObject().apply {
+                put("pajDeviceId", pajDeviceId ?: JSONObject.NULL)
+                put("reason", reason)
+            }
+            notifyListeners(EVENT_LIVE_TRACKING_STOPPED, payload)
+        } catch (e: Exception) {
+            LOG_ERROR("[BtLocationReporterPlugin] notifyLiveTrackingStopped failed: ${e.message}")
+        }
     }
 
     @PluginMethod
