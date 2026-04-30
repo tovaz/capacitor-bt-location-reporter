@@ -209,7 +209,14 @@ class BleConnectionManager(
             val autoConnect = !directConnect
             LOG("[BleConnectionManager] connectDevice $deviceId directConnect=$directConnect autoConnect=$autoConnect")
             withContext(Dispatchers.Main) {
-                device.connectGatt(context, autoConnect, buildGattCallback(deviceId))
+                // Close any stale GATT before creating a new one.
+                // Without this, every call creates a new conn ID in the BT stack
+                // while the old one leaks → "Ignore unknown conn ID" errors.
+                gattMap.remove(deviceId)?.let { stale ->
+                    runCatching { stale.disconnect() }
+                    runCatching { stale.close() }
+                }
+                gattMap[deviceId] = device.connectGatt(context, autoConnect, buildGattCallback(deviceId))
             }
         }
     }
