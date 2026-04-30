@@ -21,6 +21,13 @@ import com.paj.btlocationreporter.ConfigStore
 import com.paj.btlocationreporter.livetracking.LiveTrackingManager
 import org.json.JSONObject
 import java.util.UUID
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 private const val LOCATION_PERMISSION_REQUEST_CODE = 12345
 private const val BT_PERMISSION_REQUEST_CODE = 12346
@@ -33,6 +40,9 @@ class BtLocationReporterPlugin : Plugin() {
 
     private var pendingStartCall: PluginCall? = null
     private var pendingLocationCall: PluginCall? = null
+    private val pluginScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var btPermissionContinuation: CancellableContinuation<Boolean>? = null
+    private var locationPermissionContinuation: CancellableContinuation<Boolean>? = null
 
     companion object {
         const val EVENT_LOCATION_REPORT = "locationReport"
@@ -55,8 +65,10 @@ class BtLocationReporterPlugin : Plugin() {
 
     @PluginMethod
     fun start(call: PluginCall) {
-        LOG_INFO("[BtLocationReporterPlugin] start() called — v2026-04-22 (pide BT+ubicacion antes de lanzar servicio)")
-        
+        LOG_INFO("[BtLocationReporterPlugin] start() called")
+
+        // Parsear todos los datos del call ANTES de entrar al flujo async,
+        // para no depender de call.data en callbacks posteriores.
         val devicesArray = call.getArray("devices") ?: run {
             LOG_ERROR("[BtLocationReporterPlugin] devices array is required")
             call.reject("devices array is required"); return
@@ -66,78 +78,90 @@ class BtLocationReporterPlugin : Plugin() {
             call.reject("reportEndpoint is required"); return
         }
 
-        // Guardar la configuración completa como JSON
         val configJson = call.data.toString()
         ConfigStore.saveConfig(context, configJson)
-        // (Opcional: mantener LinkedDeviceStore para compatibilidad, pero ya no es necesario)
-        
-        // Parse debug mode
+
         val debug = call.getBoolean("debug") ?: false
         FileLogger.debugEnabled = debug
-        
-        // Parse notification texts
+
         val textsObj = call.getObject("texts")
         val textConnectedHeader = textsObj?.getString("connectedHeader") ?: "Device connected"
         val textConnected = textsObj?.getString("connected") ?: "{device} connected via Bluetooth, power saving activated"
         val textTrackerHeader = textsObj?.getString("trackerHeader") ?: "BT Location Reporter"
         val textTracker = textsObj?.getString("tracker") ?: "Tracking location in background\u2026"
 
-        // Obtener lista de bleIds
+        val devicesJsonStr = devicesArray.toString()
         val bleIds = (0 until devicesArray.length()).mapNotNull { i ->
             runCatching { devicesArray.getJSONObject(i).getString("bleDeviceId") }.getOrNull()
         }
+        val authToken  = call.getString("authToken")
+        val intervalMs = call.getLong("reportIntervalMs") ?: 30_000L
+        val extraJson  = call.getObject("extraPayloadFields")?.toString() ?: "{}"
 
         LOG("[BtLocationReporterPlugin] Config: endpoint=$endpoint, devices=${bleIds.size}, debug=$debug")
-
-        // Persist linked device IDs for BLE scan + PendingIntent in background
         LinkedDeviceStore.saveLinkedDevices(context, bleIds.toSet())
 
-        // 1. Verificar permisos BT (Android 12+) — nunca al arrancar, solo en start().
-        if (!checkBluetoothPermissionsGranted()) {
-            pendingStartCall?.let { bridge.releaseCall(it) }
-            pendingStartCall = call
-            bridge.saveCall(call)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                ActivityCompat.requestPermissions(
-                    activity,
-                    arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN),
-                    BT_PERMISSION_REQUEST_CODE
-                )
+        // Mantener el call vivo durante el flujo async de permisos.
+        bridge.saveCall(call)
+
+        pluginScope.launch {
+            // 1. Permisos BT (Android 12+) — suspende aquí hasta que el usuario responda.
+            if (!checkBluetoothPermissionsGranted()) {
+                val granted = suspendCancellableCoroutine { cont ->
+                    btPermissionContinuation = cont
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        ActivityCompat.requestPermissions(
+                            activity,
+                            arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN),
+                            BT_PERMISSION_REQUEST_CODE
+                        )
+                    } else {
+                        cont.resume(true)
+                    }
+                }
+                if (!granted) {
+                    bridge.releaseCall(call)
+                    call.reject("Bluetooth permissions were not granted")
+                    return@launch
+                }
             }
-            return
-        }
 
-        // 2. Verificar permiso de ubicación — obligatorio en Android 14+ para arrancar un
-        //    foreground service con foregroundServiceType="location".
-        if (!checkLocationPermissionGranted()) {
-            pendingStartCall?.let { bridge.releaseCall(it) }
-            pendingStartCall = call
-            bridge.saveCall(call)
-            ActivityCompat.requestPermissions(
-                activity,
-                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
-                LOCATION_PERMISSION_REQUEST_CODE
+            // 2. Permiso de ubicación — suspende aquí hasta que el usuario responda.
+            if (!checkLocationPermissionGranted()) {
+                val granted = suspendCancellableCoroutine { cont ->
+                    locationPermissionContinuation = cont
+                    ActivityCompat.requestPermissions(
+                        activity,
+                        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
+                        LOCATION_PERMISSION_REQUEST_CODE
+                    )
+                }
+                if (!granted) {
+                    bridge.releaseCall(call)
+                    call.reject("Location permission was not granted")
+                    return@launch
+                }
+            }
+
+            // 3. Todos los permisos concedidos — lanzar el servicio.
+            launchService(
+                deviceIds   = bleIds,
+                devicesJson = devicesJsonStr,
+                endpoint    = endpoint,
+                authToken   = authToken,
+                intervalMs  = intervalMs,
+                notifTitle  = textTrackerHeader,
+                notifText   = textTracker,
+                extraJson   = extraJson,
+                debug       = debug,
+                textConnectedHeader = textConnectedHeader,
+                textConnected = textConnected,
+                configJson  = configJson
             )
-            return
+            LOG_INFO("[BtLocationReporterPlugin] start() completed")
+            bridge.releaseCall(call)
+            call.resolve()
         }
-
-        launchService(
-            deviceIds   = bleIds,
-            devicesJson = devicesArray.toString(),
-            endpoint    = endpoint,
-            authToken   = call.getString("authToken"),
-            intervalMs  = call.getLong("reportIntervalMs") ?: 30_000L,
-            notifTitle  = textTrackerHeader,
-            notifText   = textTracker,
-            extraJson   = call.getObject("extraPayloadFields")?.toString() ?: "{}",
-            debug       = debug,
-            textConnectedHeader = textConnectedHeader,
-            textConnected = textConnected,
-            configJson = configJson
-        )
-        LOG_INFO("[BtLocationReporterPlugin] start() completed")
-        bridge.releaseCall(call)
-        call.resolve()
     }
 
     @PluginMethod
@@ -257,17 +281,22 @@ class BtLocationReporterPlugin : Plugin() {
             BT_PERMISSION_REQUEST_CODE -> {
                 val granted = checkBluetoothPermissionsGranted()
                 LOG("[BtLocationReporterPlugin] BT permission result: granted=$granted")
-                val savedCall = pendingStartCall
-                pendingStartCall = null
-                if (savedCall != null) {
-                    if (granted) {
-                        // Defer start() so it runs AFTER onRequestPermissionsResult returns.
-                        // Calling requestPermissions() from within onRequestPermissionsResult
-                        // is silently ignored on many Android OEM skins (Samsung, Xiaomi, etc.).
-                        Handler(Looper.getMainLooper()).post { start(savedCall) }
-                    } else {
-                        bridge.releaseCall(savedCall)
-                        savedCall.reject("Bluetooth permissions were not granted")
+                val cont = btPermissionContinuation
+                if (cont != null) {
+                    // Nuevo flujo: reanudar la coroutine de start() suspendida.
+                    btPermissionContinuation = null
+                    cont.resume(granted)
+                } else {
+                    // Flujo legacy (pendingStartCall) — por compatibilidad.
+                    val savedCall = pendingStartCall
+                    pendingStartCall = null
+                    if (savedCall != null) {
+                        if (granted) {
+                            Handler(Looper.getMainLooper()).post { start(savedCall) }
+                        } else {
+                            bridge.releaseCall(savedCall)
+                            savedCall.reject("Bluetooth permissions were not granted")
+                        }
                     }
                 }
             }
@@ -277,19 +306,22 @@ class BtLocationReporterPlugin : Plugin() {
                 if (granted) {
                     BtLocationReporterService.onLocationPermissionGranted()
                 }
-                // Si start() estaba esperando este permiso para lanzar el servicio, reintentarlo.
-                val savedStartCall = pendingStartCall
-                if (savedStartCall != null) {
-                    pendingStartCall = null
-                    if (granted) {
-                        // Defer start() so it runs AFTER onRequestPermissionsResult returns.
-                        // Calling startForegroundService() synchronously here triggers
-                        // ForegroundServiceStartNotAllowedException on Android 14+ because
-                        // the Activity hasn't fully resumed foreground state yet.
-                        Handler(Looper.getMainLooper()).post { start(savedStartCall) }
-                    } else {
-                        bridge.releaseCall(savedStartCall)
-                        savedStartCall.reject("Location permission was not granted")
+                val cont = locationPermissionContinuation
+                if (cont != null) {
+                    // Nuevo flujo: reanudar la coroutine de start() suspendida.
+                    locationPermissionContinuation = null
+                    cont.resume(granted)
+                } else {
+                    // Flujo legacy (pendingStartCall) — por compatibilidad.
+                    val savedStartCall = pendingStartCall
+                    if (savedStartCall != null) {
+                        pendingStartCall = null
+                        if (granted) {
+                            Handler(Looper.getMainLooper()).post { start(savedStartCall) }
+                        } else {
+                            bridge.releaseCall(savedStartCall)
+                            savedStartCall.reject("Location permission was not granted")
+                        }
                     }
                 }
                 // Resolver llamada explícita a requestLocationPermission() si la hubiera.
