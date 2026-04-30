@@ -282,9 +282,11 @@ class BtLocationReporterPlugin : Plugin() {
                 if (savedStartCall != null) {
                     pendingStartCall = null
                     if (granted) {
-                        // All permissions now granted — launch the service.
-                        // releaseCall happens inside start() path after resolve().
-                        start(savedStartCall)
+                        // Defer start() so it runs AFTER onRequestPermissionsResult returns.
+                        // Calling startForegroundService() synchronously here triggers
+                        // ForegroundServiceStartNotAllowedException on Android 14+ because
+                        // the Activity hasn't fully resumed foreground state yet.
+                        Handler(Looper.getMainLooper()).post { start(savedStartCall) }
                     } else {
                         bridge.releaseCall(savedStartCall)
                         savedStartCall.reject("Location permission was not granted")
