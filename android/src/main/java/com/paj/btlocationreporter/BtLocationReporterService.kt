@@ -136,6 +136,7 @@ class BtLocationReporterService : Service() {
     private var lastReportTime           = 0L
     private var isLocationTracking       = false
     private var locationPermissionRequested = false
+    private var shutdownCalled           = false
 
     // Bridge between [LiveTrackingManager] and this service. Non-null while the
     // service is alive; used to reconfigure location updates when a live
@@ -164,6 +165,11 @@ class BtLocationReporterService : Service() {
     override fun onCreate() {
         super.onCreate()
         FileLogger.init(this)
+        // Llamar startForeground() inmediatamente en onCreate() antes de procesar cualquier
+        // intent en onStartCommand(). Esto satisface el timer de 5 segundos de Android 12+
+        // independientemente de lo que llegue en onStartCommand (ACTION_STOP incluido),
+        // evitando ForegroundServiceDidNotStartInTimeException.
+        startForegroundSafe("BT Location Reporter", "Starting…")
         LOG("[BtLocationReporterService] Created")
     }
 
@@ -271,6 +277,7 @@ class BtLocationReporterService : Service() {
         }
 
         isRunning       = true
+        shutdownCalled  = false
         serviceInstance = this
 
         // Wire the LiveTrackingManager to this service so temporary interval
@@ -512,6 +519,8 @@ class BtLocationReporterService : Service() {
     }
 
     private fun shutdown() {
+        if (shutdownCalled) return
+        shutdownCalled = true
         LOG("[BtLocationReporterService] Stopping…")
         isRunning                   = false
         isLocationTracking          = false
