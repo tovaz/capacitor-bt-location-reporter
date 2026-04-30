@@ -122,62 +122,49 @@ class BtLocationReporterPlugin : Plugin() {
         bridge.saveCall(call)
 
         pluginScope.launch {
-            // 1. Permisos BT (Android 12+) — suspende aquí hasta que el usuario responda.
-            if (!checkBluetoothPermissionsGranted()) {
-                val granted = suspendCancellableCoroutine { cont ->
-                    btPermissionContinuation = cont
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        ActivityCompat.requestPermissions(
-                            activity,
-                            arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN),
-                            BT_PERMISSION_REQUEST_CODE
-                        )
-                    } else {
-                        cont.resume(true)
+            try {
+                // 1. Permisos BT (Android 12+) — suspende aquí hasta que el usuario responda.
+                if (!checkBluetoothPermissionsGranted()) {
+                    val granted = requestBluetoothPermissionsSuspend()
+                    if (!granted) {
+                        bridge.releaseCall(call)
+                        call.reject("Bluetooth permissions were not granted")
+                        return@launch
                     }
                 }
-                if (!granted) {
-                    bridge.releaseCall(call)
-                    call.reject("Bluetooth permissions were not granted")
-                    return@launch
-                }
-            }
 
-            // 2. Permiso de ubicación — suspende aquí hasta que el usuario responda.
-            if (!checkLocationPermissionGranted()) {
-                val granted = suspendCancellableCoroutine { cont ->
-                    locationPermissionContinuation = cont
-                    ActivityCompat.requestPermissions(
-                        activity,
-                        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
-                        LOCATION_PERMISSION_REQUEST_CODE
-                    )
+                // 2. Permiso de ubicación — suspende aquí hasta que el usuario responda.
+                if (!checkLocationPermissionGranted()) {
+                    val granted = requestLocationPermissionSuspend()
+                    if (!granted) {
+                        bridge.releaseCall(call)
+                        call.reject("Location permission was not granted")
+                        return@launch
+                    }
                 }
-                if (!granted) {
-                    bridge.releaseCall(call)
-                    call.reject("Location permission was not granted")
-                    return@launch
-                }
-            }
 
-            // 3. Todos los permisos concedidos — lanzar el servicio.
-            launchService(
-                deviceIds   = bleIds,
-                devicesJson = devicesJsonStr,
-                endpoint    = endpoint,
-                authToken   = authToken,
-                intervalMs  = intervalMs,
-                notifTitle  = textTrackerHeader,
-                notifText   = textTracker,
-                extraJson   = extraJson,
-                debug       = debug,
-                textConnectedHeader = textConnectedHeader,
-                textConnected = textConnected,
-                configJson  = configJson
-            )
-            LOG_INFO("[BtLocationReporterPlugin] start() completed")
-            bridge.releaseCall(call)
-            call.resolve()
+                // 3. Todos los permisos concedidos — lanzar el servicio.
+                launchService(
+                    deviceIds   = bleIds,
+                    devicesJson = devicesJsonStr,
+                    endpoint    = endpoint,
+                    authToken   = authToken,
+                    intervalMs  = intervalMs,
+                    notifTitle  = textTrackerHeader,
+                    notifText   = textTracker,
+                    extraJson   = extraJson,
+                    debug       = debug,
+                    textConnectedHeader = textConnectedHeader,
+                    textConnected = textConnected,
+                    configJson  = configJson
+                )
+                LOG_INFO("[BtLocationReporterPlugin] start() completed")
+                bridge.releaseCall(call)
+                call.resolve()
+            } catch (e: Exception) {
+                bridge.releaseCall(call)
+                call.reject("start() failed", e)
+            }
         }
     }
 
@@ -377,37 +364,21 @@ class BtLocationReporterPlugin : Plugin() {
         bridge.saveCall(call)
 
         pluginScope.launch {
-            // 1. Pedir permisos BT si corresponde y faltan
-            if (requestBt && !checkBluetoothPermissionsGranted()) {
-                suspendCancellableCoroutine { cont ->
-                    btPermissionContinuation = cont
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                        ActivityCompat.requestPermissions(
-                            activity,
-                            arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN),
-                            BT_PERMISSION_REQUEST_CODE
-                        )
-                    } else {
-                        cont.resume(true)
-                    }
+            try {
+                if (requestBt && !checkBluetoothPermissionsGranted()) {
+                    requestBluetoothPermissionsSuspend()
                 }
-            }
-            // 2. Pedir permiso de ubicación si corresponde y falta
-            if (requestLocation && !checkLocationPermissionGranted()) {
-                suspendCancellableCoroutine { cont ->
-                    locationPermissionContinuation = cont
-                    ActivityCompat.requestPermissions(
-                        activity,
-                        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
-                        LOCATION_PERMISSION_REQUEST_CODE
-                    )
+                if (requestLocation && !checkLocationPermissionGranted()) {
+                    requestLocationPermissionSuspend()
                 }
+                val status = buildPermissionsStatus()
+                bridge.releaseCall(call)
+                call.resolve(status)
+                emitPermissionsChanged()
+            } catch (e: Exception) {
+                bridge.releaseCall(call)
+                call.reject("Permission request failed", e)
             }
-            // 3. Devolver el estado completo de todos los permisos (siempre)
-            val status = buildPermissionsStatus()
-            bridge.releaseCall(call)
-            call.resolve(status)
-            emitPermissionsChanged()
         }
     }
 
@@ -442,6 +413,40 @@ class BtLocationReporterPlugin : Plugin() {
         return ContextCompat.checkSelfPermission(
             context, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private suspend fun requestBluetoothPermissionsSuspend(): Boolean {
+        if (checkBluetoothPermissionsGranted()) return true
+        return suspendCancellableCoroutine { cont ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                btPermissionContinuation = cont
+                cont.invokeOnCancellation {
+                    if (btPermissionContinuation === cont) btPermissionContinuation = null
+                }
+                ActivityCompat.requestPermissions(
+                    activity,
+                    arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN),
+                    BT_PERMISSION_REQUEST_CODE
+                )
+            } else {
+                cont.resume(true)
+            }
+        }
+    }
+
+    private suspend fun requestLocationPermissionSuspend(): Boolean {
+        if (checkLocationPermissionGranted()) return true
+        return suspendCancellableCoroutine { cont ->
+            locationPermissionContinuation = cont
+            cont.invokeOnCancellation {
+                if (locationPermissionContinuation === cont) locationPermissionContinuation = null
+            }
+            ActivityCompat.requestPermissions(
+                activity,
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
+                LOCATION_PERMISSION_REQUEST_CODE
+            )
+        }
     }
 
     private fun buildPermissionsStatus(): JSObject {
