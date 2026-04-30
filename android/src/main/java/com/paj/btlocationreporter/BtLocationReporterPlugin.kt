@@ -373,6 +373,9 @@ class BtLocationReporterPlugin : Plugin() {
         val requestBt       = "bluetooth"      in requested || "bluetoothscan" in requested
         val requestLocation = "location"       in requested
 
+        // Mantener el call vivo mientras la coroutine espera las respuestas del usuario.
+        bridge.saveCall(call)
+
         pluginScope.launch {
             // 1. Pedir permisos BT si corresponde y faltan
             if (requestBt && !checkBluetoothPermissionsGranted()) {
@@ -402,6 +405,7 @@ class BtLocationReporterPlugin : Plugin() {
             }
             // 3. Devolver el estado completo de todos los permisos (siempre)
             val status = buildPermissionsStatus()
+            bridge.releaseCall(call)
             call.resolve(status)
             emitPermissionsChanged()
         }
