@@ -65,7 +65,7 @@ class BleConnectionManager(
                     }
                     BluetoothAdapter.STATE_ON -> {
                         LOG("[BleConnectionManager] Bluetooth ON detected — reconnecting ${targetIds.size} devices")
-                        targetIds.forEach { connectDevice(it) }
+                        targetIds.forEach { connectDevice(it, directConnect = true) }
                     }
                 }
             }
@@ -99,7 +99,9 @@ class BleConnectionManager(
             IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
-        targetIds.forEach { connectDevice(it) }
+        // directConnect=true: conexión activa e inmediata si el dispositivo ya está cerca.
+        // Tras un disconnect, scheduleReconnect usará autoConnect=true para reconexión eficiente en background.
+        targetIds.forEach { connectDevice(it, directConnect = true) }
     }
 
     fun stop() {
@@ -113,7 +115,7 @@ class BleConnectionManager(
     fun addDevices(ids: List<String>) {
         ids.filter { it !in targetIds }.forEach { id ->
             targetIds.add(id)
-            connectDevice(id)
+            connectDevice(id, directConnect = true)
         }
     }
 
@@ -190,7 +192,7 @@ class BleConnectionManager(
 
     // ── Connection logic ──────────────────────────────────────────────────
 
-    private fun connectDevice(deviceId: String) {
+    private fun connectDevice(deviceId: String, directConnect: Boolean) {
         scope.launch {
             val adapter = bluetoothAdapter ?: run {
                 LOG_ERROR("[BleConnectionManager] BT adapter not available")
@@ -202,9 +204,12 @@ class BleConnectionManager(
                 return@launch
             }
 
+            // directConnect=true  → conexión activa inmediata (rápida si el dispositivo está cerca).
+            // directConnect=false → autoConnect gestionado por el OS en background (eficiente en batería).
+            val autoConnect = !directConnect
+            LOG("[BleConnectionManager] connectDevice $deviceId directConnect=$directConnect autoConnect=$autoConnect")
             withContext(Dispatchers.Main) {
-                // autoConnect=true: Android will reconnect when the device comes into range
-                device.connectGatt(context, true, buildGattCallback(deviceId))
+                device.connectGatt(context, autoConnect, buildGattCallback(deviceId))
             }
         }
     }
@@ -214,7 +219,8 @@ class BleConnectionManager(
         scope.launch {
             delay(RECONNECT_DELAY_MS)
             if (deviceId in targetIds) {
-                connectDevice(deviceId)
+                // autoConnect=true: el OS gestiona el escaneo en background eficientemente.
+                connectDevice(deviceId, directConnect = false)
             }
         }
     }
