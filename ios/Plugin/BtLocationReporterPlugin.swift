@@ -2,6 +2,7 @@ import Capacitor
 import CoreBluetooth
 import CoreLocation
 import Foundation
+import SystemConfiguration
 
 /// Capacitor plugin entry point for iOS.
 /// Delegates all heavy lifting to [BtLocationReporter] (the coordinator singleton).
@@ -20,6 +21,8 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "getLogs",                  returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestLocationPermission", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "hasLocationPermission",     returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "checkPermissions",          returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "requestPermissions",        returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "writeWithoutResponse",      returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "startLiveTracking",         returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stopLiveTracking",          returnType: CAPPluginReturnPromise),
@@ -431,7 +434,7 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
                 }
             } else {
                 // No coordinator yet - just check current status
-                let status = CLLocationManager.authorizationStatus()
+                let status = CLLocationManager().authorizationStatus
                 let granted = status == .authorizedAlways || status == .authorizedWhenInUse
                 call.resolve(["granted": granted])
             }
@@ -439,9 +442,89 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
     }
     
     @objc func hasLocationPermission(_ call: CAPPluginCall) {
-        let status = CLLocationManager.authorizationStatus()
+        let status = CLLocationManager().authorizationStatus
         let granted = status == .authorizedAlways || status == .authorizedWhenInUse
         call.resolve(["granted": granted])
+    }
+
+    @objc public override func checkPermissions(_ call: CAPPluginCall) {
+        Task { @MainActor in
+            call.resolve(self.buildPermissionsStatus())
+        }
+    }
+
+    @objc public override func requestPermissions(_ call: CAPPluginCall) {
+        // Parse which permissions to request.
+        // nil / empty array → request all (default behaviour).
+        let requested: Set<String>
+        if let arr = call.getArray("permissions") as? [String], !arr.isEmpty {
+            requested = Set(arr.map { $0.lowercased() })
+        } else {
+            requested = ["bluetooth", "bluetoothscan", "location"]
+        }
+
+        let requestLocation = requested.contains("location")
+        // On iOS, Bluetooth auth is managed automatically by CBCentralManager.
+        // We have nothing to request explicitly for 'bluetooth'/'bluetoothscan'.
+
+        Task { @MainActor in
+            if requestLocation {
+                if let coordinator = self.coordinator {
+                    coordinator.requestLocationPermission { [weak self] _ in
+                        Task { @MainActor in
+                            let status = self?.buildPermissionsStatus() ?? [:]
+                            call.resolve(status)
+                            self?.notifyListeners("permissionsChanged", data: status)
+                        }
+                    }
+                } else {
+                    let status = buildPermissionsStatus()
+                    call.resolve(status)
+                }
+            } else {
+                // No location requested — return current full status immediately
+                let status = buildPermissionsStatus()
+                call.resolve(status)
+                notifyListeners("permissionsChanged", data: status)
+            }
+        }
+    }
+
+    // Builds the PermissionsStatus dictionary (mirrors Android buildPermissionsStatus)
+    @MainActor
+    private func buildPermissionsStatus() -> [String: Any] {
+        let locationStatus = CLLocationManager().authorizationStatus
+        let locationGranted = locationStatus == .authorizedAlways || locationStatus == .authorizedWhenInUse
+
+        var btPermission = "granted"
+        if #available(iOS 13.1, *) {
+            switch CBCentralManager.authorization {
+            case .allowedAlways: btPermission = "granted"
+            default:             btPermission = "denied"
+            }
+        }
+
+        let btEnabled = coordinator?.isBluetoothEnabled ?? false
+        let internetAvailable = checkInternetAvailablePlugin()
+        let allGranted = locationGranted && btPermission == "granted" && btEnabled
+        return [
+            "locationPermission":  locationGranted ? "granted" : "denied",
+            "bluetoothPermission": btPermission,
+            "bluetoothEnabled":    btEnabled,
+            "internetAvailable":   internetAvailable,
+            "allGranted":          allGranted,
+        ]
+    }
+
+    // Simple synchronous internet reachability check (SCNetworkReachability)
+    private func checkInternetAvailablePlugin() -> Bool {
+        var zeroAddr = sockaddr()
+        zeroAddr.sa_len    = UInt8(MemoryLayout<sockaddr>.size)
+        zeroAddr.sa_family = sa_family_t(AF_INET)
+        guard let ref = SCNetworkReachabilityCreateWithAddress(nil, &zeroAddr) else { return false }
+        var flags: SCNetworkReachabilityFlags = []
+        SCNetworkReachabilityGetFlags(ref, &flags)
+        return flags.contains(.reachable) && !flags.contains(.connectionRequired)
     }
 
     @objc func writeWithoutResponse(_ call: CAPPluginCall) {

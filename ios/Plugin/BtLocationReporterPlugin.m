@@ -11,6 +11,8 @@ CAP_PLUGIN(BtLocationReporterPlugin, "BtLocationReporter",
     CAP_PLUGIN_METHOD(getLogs,                   CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(requestLocationPermission, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(hasLocationPermission,     CAPPluginReturnPromise);
+    CAP_PLUGIN_METHOD(checkPermissions,          CAPPluginReturnPromise);
+    CAP_PLUGIN_METHOD(requestPermissions,        CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(writeWithoutResponse,      CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(startLiveTracking,         CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(stopLiveTracking,          CAPPluginReturnPromise);

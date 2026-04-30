@@ -106,6 +106,8 @@ enum DeviceEntryDedup {
 class BtLocationReporter: NSObject {
 
     private(set) var isRunning = false
+    /// Returns true when the Bluetooth radio is currently powered on.
+    var isBluetoothEnabled: Bool { bleManager?.isBluetoothEnabled ?? false }
     private weak var plugin: BtLocationReporterPlugin?
     public private(set) var config: BtLocationConfig?
     private var bleManager: BleManager?

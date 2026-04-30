@@ -19,6 +19,14 @@ import com.getcapacitor.annotation.CapacitorPlugin
 import com.paj.btlocationreporter.LinkedDeviceStore
 import com.paj.btlocationreporter.ConfigStore
 import com.paj.btlocationreporter.livetracking.LiveTrackingManager
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
+import android.location.LocationManager
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import org.json.JSONObject
 import java.util.UUID
 import kotlinx.coroutines.CancellableContinuation
@@ -43,6 +51,7 @@ class BtLocationReporterPlugin : Plugin() {
     private val pluginScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var btPermissionContinuation: CancellableContinuation<Boolean>? = null
     private var locationPermissionContinuation: CancellableContinuation<Boolean>? = null
+    private var permissionsReceiver: BroadcastReceiver? = null
 
     companion object {
         const val EVENT_LOCATION_REPORT = "locationReport"
@@ -50,6 +59,7 @@ class BtLocationReporterPlugin : Plugin() {
         const val EVENT_LOCATION_PERMISSION_REQUIRED = "locationPermissionRequired"
         const val EVENT_LIVE_TRACKING_STARTED = "liveTrackingStarted"
         const val EVENT_LIVE_TRACKING_STOPPED = "liveTrackingStopped"
+        const val EVENT_PERMISSIONS_CHANGED = "permissionsChanged"
 
         var instance: BtLocationReporterPlugin? = null
     }
@@ -59,6 +69,13 @@ class BtLocationReporterPlugin : Plugin() {
         FileLogger.init(context)
         LOG("[BtLocationReporterPlugin] Loaded")
         LOG("[BtLocationReporterPlugin] Log file: ${FileLogger.getLogPath()}")
+        registerPermissionsReceiver()
+    }
+
+    override fun handleOnDestroy() {
+        super.handleOnDestroy()
+        permissionsReceiver?.let { runCatching { context.unregisterReceiver(it) } }
+        permissionsReceiver = null
     }
 
     // ── Plugin methods ─────────────────────────────────────────────────────
@@ -329,12 +346,65 @@ class BtLocationReporterPlugin : Plugin() {
                 pendingLocationCall = null
             }
         }
+        // Notificar a JS siempre que cambie cualquier permiso.
+        emitPermissionsChanged()
     }
 
     @PluginMethod
     fun hasLocationPermission(call: PluginCall) {
         val granted = checkLocationPermissionGranted()
         call.resolve(JSObject().put("granted", granted))
+    }
+
+    @PluginMethod
+    override fun checkPermissions(call: PluginCall) {
+        call.resolve(buildPermissionsStatus())
+    }
+
+    @PluginMethod
+    override fun requestPermissions(call: PluginCall) {
+        // Parse which permissions to request.
+        // null / empty array → request all missing permissions (default behaviour).
+        val requested: Set<String> = call.getArray("permissions")
+            ?.let { arr -> (0 until arr.length()).mapNotNull { runCatching { arr.getString(it).lowercase() }.getOrNull() }.toSet() }
+            ?.takeIf { it.isNotEmpty() }
+            ?: setOf("bluetooth", "bluetoothscan", "location")
+
+        val requestBt       = "bluetooth"      in requested || "bluetoothscan" in requested
+        val requestLocation = "location"       in requested
+
+        pluginScope.launch {
+            // 1. Pedir permisos BT si corresponde y faltan
+            if (requestBt && !checkBluetoothPermissionsGranted()) {
+                suspendCancellableCoroutine { cont ->
+                    btPermissionContinuation = cont
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        ActivityCompat.requestPermissions(
+                            activity,
+                            arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN),
+                            BT_PERMISSION_REQUEST_CODE
+                        )
+                    } else {
+                        cont.resume(true)
+                    }
+                }
+            }
+            // 2. Pedir permiso de ubicación si corresponde y falta
+            if (requestLocation && !checkLocationPermissionGranted()) {
+                suspendCancellableCoroutine { cont ->
+                    locationPermissionContinuation = cont
+                    ActivityCompat.requestPermissions(
+                        activity,
+                        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
+                        LOCATION_PERMISSION_REQUEST_CODE
+                    )
+                }
+            }
+            // 3. Devolver el estado completo de todos los permisos (siempre)
+            val status = buildPermissionsStatus()
+            call.resolve(status)
+            emitPermissionsChanged()
+        }
     }
 
     // ── Helper methods ─────────────────────────────────────────────────────
@@ -368,6 +438,49 @@ class BtLocationReporterPlugin : Plugin() {
         return ContextCompat.checkSelfPermission(
             context, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun buildPermissionsStatus(): JSObject {
+        val locationGranted = checkLocationPermissionGranted()
+        val btGranted = checkBluetoothPermissionsGranted()
+        val btMgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        val btEnabled = btMgr?.adapter?.isEnabled == true
+        val internet = checkInternetAvailablePlugin()
+        return JSObject().apply {
+            put("locationPermission", if (locationGranted) "granted" else "denied")
+            put("bluetoothPermission", if (btGranted) "granted" else "denied")
+            put("bluetoothEnabled", btEnabled)
+            put("internetAvailable", internet)
+            put("allGranted", locationGranted && btGranted && btEnabled)
+        }
+    }
+
+    private fun checkInternetAvailablePlugin(): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val caps = cm.getNetworkCapabilities(cm.activeNetwork ?: return false) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        } else {
+            @Suppress("DEPRECATION")
+            cm.activeNetworkInfo?.isConnected == true
+        }
+    }
+
+    private fun registerPermissionsReceiver() {
+        permissionsReceiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    BluetoothAdapter.ACTION_STATE_CHANGED,
+                    LocationManager.PROVIDERS_CHANGED_ACTION -> emitPermissionsChanged()
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+            addAction(LocationManager.PROVIDERS_CHANGED_ACTION)
+        }
+        ContextCompat.registerReceiver(context, permissionsReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     private fun launchService(
@@ -410,6 +523,10 @@ class BtLocationReporterPlugin : Plugin() {
     }
 
     // ── Event helpers (called from Service) ───────────────────────────────
+
+    fun emitPermissionsChanged() {
+        notifyListeners(EVENT_PERMISSIONS_CHANGED, buildPermissionsStatus())
+    }
 
     fun notifyLocationReport(payload: JSObject, httpStatus: Int, success: Boolean) {
         notifyListeners(EVENT_LOCATION_REPORT, JSObject().apply {

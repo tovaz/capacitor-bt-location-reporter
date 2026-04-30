@@ -1,5 +1,5 @@
 import { WebPlugin } from '@capacitor/core';
-import type { BtDeviceEntry, BtLocationConfig, BtLocationReporterPlugin, LiveTrackingSession } from './definitions';
+import type { BtDeviceEntry, BtLocationConfig, BtLocationReporterPlugin, LiveTrackingSession, PermissionsStatus } from './definitions';
 export declare class BtLocationReporterWeb extends WebPlugin implements BtLocationReporterPlugin {
     private warn;
     start(_options: BtLocationConfig): Promise<void>;
@@ -25,6 +25,10 @@ export declare class BtLocationReporterWeb extends WebPlugin implements BtLocati
     hasLocationPermission(): Promise<{
         granted: boolean;
     }>;
+    checkPermissions(): Promise<PermissionsStatus>;
+    requestPermissions(_options?: {
+        permissions?: ('bluetooth' | 'location' | 'bluetoothscan')[];
+    }): Promise<PermissionsStatus>;
     writeWithoutResponse(_options: {
         deviceId: string;
         service: string;

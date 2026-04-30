@@ -32,6 +32,26 @@ export class BtLocationReporterWeb extends WebPlugin {
         this.warn();
         return { granted: false };
     }
+    async checkPermissions() {
+        this.warn();
+        return {
+            locationPermission: 'denied',
+            bluetoothPermission: 'denied',
+            bluetoothEnabled: false,
+            internetAvailable: false,
+            allGranted: false,
+        };
+    }
+    async requestPermissions(_options) {
+        this.warn();
+        return {
+            locationPermission: 'denied',
+            bluetoothPermission: 'denied',
+            bluetoothEnabled: false,
+            internetAvailable: false,
+            allGranted: false,
+        };
+    }
     async writeWithoutResponse(_options) {
         this.warn();
     }

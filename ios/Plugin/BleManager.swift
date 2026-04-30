@@ -59,6 +59,9 @@ class BleManager: NSObject {
 
     // ── Public API ────────────────────────────────────────────────────────
 
+    /// Returns true when the Bluetooth radio is currently powered on.
+    var isBluetoothEnabled: Bool { central.state == .poweredOn }
+
     func start() {
         if central.state == .poweredOn {
             connectAllKnown()

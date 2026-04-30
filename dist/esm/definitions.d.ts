@@ -149,6 +149,22 @@ export interface LiveTrackingStoppedEvent {
     reason: 'manual' | 'expired' | 'stopAll';
 }
 /**
+ * Status of all required permissions and hardware states.
+ * Use checkPermissions() to query and requestPermissions() to prompt the user.
+ */
+export interface PermissionsStatus {
+    /** Whether location permission is granted (ACCESS_FINE_LOCATION / CLAuthorizationStatus) */
+    locationPermission: 'granted' | 'denied';
+    /** Whether Bluetooth permission is granted (Android 12+ BLUETOOTH_CONNECT/SCAN; iOS 13+ CBManagerAuthorization). Always "granted" on Android < 12. */
+    bluetoothPermission: 'granted' | 'denied';
+    /** Whether the Bluetooth radio is currently powered on */
+    bluetoothEnabled: boolean;
+    /** Whether the device has an active internet connection */
+    internetAvailable: boolean;
+    /** Convenience: true iff locationPermission and bluetoothPermission are "granted" AND bluetoothEnabled is true */
+    allGranted: boolean;
+}
+/**
  * Main plugin interface.
  */
 export interface BtLocationReporterPlugin {
@@ -207,6 +223,32 @@ export interface BtLocationReporterPlugin {
      */
     hasLocationPermission(): Promise<{
         granted: boolean;
+    }>;
+    /**
+     * Returns the current status of all required permissions and hardware states.
+     * Does NOT prompt the user — safe to call at any time.
+     */
+    checkPermissions(): Promise<PermissionsStatus>;
+    /**
+     * Requests the specified permissions in sequence. Returns the final PermissionsStatus.
+     *
+     * - `options.permissions` omitted / `null` / `[]` → requests all missing permissions (Bluetooth first, then location).
+     * - Otherwise only requests the listed permissions. Accepted values:
+     *   - `'bluetooth'`     → BLUETOOTH_CONNECT + BLUETOOTH_SCAN (Android 12+) / CBCentralManager auth (iOS)
+     *   - `'bluetoothscan'` → same as `'bluetooth'` (alias kept for convenience)
+     *   - `'location'`      → ACCESS_FINE_LOCATION (Android) / CLLocationManager (iOS)
+     *
+     * Always returns the full PermissionsStatus regardless of which permissions were requested.
+     */
+    requestPermissions(options?: {
+        permissions?: ('bluetooth' | 'location' | 'bluetoothscan')[];
+    }): Promise<PermissionsStatus>;
+    /**
+     * Fired whenever a permission or hardware state changes (Bluetooth on/off,
+     * location permission granted/denied, location services toggled).
+     */
+    addListener(eventName: 'permissionsChanged', listenerFunc: (event: PermissionsStatus) => void): Promise<{
+        remove: () => void;
     }>;
     /**
      * Fired whenever the native layer successfully posts a location report.

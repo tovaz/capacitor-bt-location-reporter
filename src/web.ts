@@ -4,6 +4,7 @@ import type {
   BtLocationConfig,
   BtLocationReporterPlugin,
   LiveTrackingSession,
+  PermissionsStatus,
 } from './definitions';
 
 export class BtLocationReporterWeb
@@ -50,6 +51,28 @@ export class BtLocationReporterWeb
   async hasLocationPermission(): Promise<{ granted: boolean }> {
     this.warn();
     return { granted: false };
+  }
+
+  async checkPermissions(): Promise<PermissionsStatus> {
+    this.warn();
+    return {
+      locationPermission: 'denied',
+      bluetoothPermission: 'denied',
+      bluetoothEnabled: false,
+      internetAvailable: false,
+      allGranted: false,
+    };
+  }
+
+  async requestPermissions(_options?: { permissions?: ('bluetooth' | 'location' | 'bluetoothscan')[] }): Promise<PermissionsStatus> {
+    this.warn();
+    return {
+      locationPermission: 'denied',
+      bluetoothPermission: 'denied',
+      bluetoothEnabled: false,
+      internetAvailable: false,
+      allGranted: false,
+    };
   }
 
   async writeWithoutResponse(_options: {
