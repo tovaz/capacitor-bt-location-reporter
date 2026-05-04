@@ -15,6 +15,8 @@ import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
+import com.getcapacitor.annotation.Permission
+import com.getcapacitor.annotation.PermissionCallback
 
 import com.paj.btlocationreporter.LinkedDeviceStore
 import com.paj.btlocationreporter.ConfigStore
@@ -41,10 +43,26 @@ private const val LOCATION_PERMISSION_REQUEST_CODE = 12345
 private const val BT_PERMISSION_REQUEST_CODE = 12346
 private const val ALL_PERMISSIONS_REQUEST_CODE   = 12347
 
-// Los permisos NO se declaran aquí en la anotación de Capacitor para evitar
-// que el framework los solicite automáticamente al arrancar la app.
-// Se piden manualmente solo cuando el usuario llama a start().
-@CapacitorPlugin(name = "BtLocationReporter")
+// Los permisos se declaran aquí en la anotación de Capacitor usando el nuevo API.
+// Capacitor NO los solicita automáticamente al arrancar, solo registra los alias.
+@CapacitorPlugin(
+    name = "BtLocationReporter",
+    permissions = [
+        Permission(
+            alias = "location",
+            strings = [
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ]
+        ),
+        Permission(
+            alias = "bluetooth",
+            strings = [
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN
+            ]
+        )
+    ]
+)
 class BtLocationReporterPlugin : Plugin() {
 
     private var pendingStartCall: PluginCall? = null
@@ -262,87 +280,16 @@ class BtLocationReporterPlugin : Plugin() {
             return
         }
         
-        // Store the call and request permission manually
-        pendingLocationCall = call
-        ActivityCompat.requestPermissions(
-            activity,
-            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
-            LOCATION_PERMISSION_REQUEST_CODE
-        )
-    }
-    
-    override fun handleRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.handleRequestPermissionsResult(requestCode, permissions, grantResults)
-
-        when (requestCode) {
-            BT_PERMISSION_REQUEST_CODE -> {
-                val granted = checkBluetoothPermissionsGranted()
-                LOG("[BtLocationReporterPlugin] BT permission result: granted=$granted")
-                val cont = btPermissionContinuation
-                if (cont != null) {
-                    // Nuevo flujo: reanudar la coroutine de start() suspendida.
-                    btPermissionContinuation = null
-                    cont.resume(granted)
-                } else {
-                    // Flujo legacy (pendingStartCall) — por compatibilidad.
-                    val savedCall = pendingStartCall
-                    pendingStartCall = null
-                    if (savedCall != null) {
-                        if (granted) {
-                            Handler(Looper.getMainLooper()).post { start(savedCall) }
-                        } else {
-                            bridge.releaseCall(savedCall)
-                            savedCall.reject("Bluetooth permissions were not granted")
-                        }
-                    }
-                }
-            }
-            LOCATION_PERMISSION_REQUEST_CODE -> {
-                val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
-                LOG("[BtLocationReporterPlugin] Location permission result: granted=$granted")
-                if (granted) {
-                    BtLocationReporterService.onLocationPermissionGranted()
-                }
-                val cont = locationPermissionContinuation
-                if (cont != null) {
-                    // Nuevo flujo: reanudar la coroutine de start() suspendida.
-                    locationPermissionContinuation = null
-                    cont.resume(granted)
-                } else {
-                    // Flujo legacy (pendingStartCall) — por compatibilidad.
-                    val savedStartCall = pendingStartCall
-                    if (savedStartCall != null) {
-                        pendingStartCall = null
-                        if (granted) {
-                            Handler(Looper.getMainLooper()).post { start(savedStartCall) }
-                        } else {
-                            bridge.releaseCall(savedStartCall)
-                            savedStartCall.reject("Location permission was not granted")
-                        }
-                    }
-                }
-                // Resolver llamada explícita a requestLocationPermission() si la hubiera.
-                pendingLocationCall?.resolve(JSObject().put("granted", granted))
-                pendingLocationCall = null
-            }
-            ALL_PERMISSIONS_REQUEST_CODE -> {
-                val allGranted = grantResults.all { it == PackageManager.PERMISSION_GRANTED }
-                LOG("[BtLocationReporterPlugin] All-permissions result: granted=$allGranted")
-                if (allGranted) BtLocationReporterService.onLocationPermissionGranted()
-                val cont = allPermissionsContinuation
-                if (cont != null) {
-                    allPermissionsContinuation = null
-                    cont.resume(allGranted)
-                }
-            }
-        }
-        // Notificar a JS siempre que cambie cualquier permiso.
-        emitPermissionsChanged()
+        requestPermissionForAlias("location", call, "locationPermissionCallback")
     }
 
-    @PluginMethod
-    fun hasLocationPermission(call: PluginCall) {
+    @PermissionCallback
+    private fun locationPermissionCallback(call: PluginCall) {
         val granted = checkLocationPermissionGranted()
+        LOG("[BtLocationReporterPlugin] Location permission result: granted=$granted")
+        if (granted) {
+            BtLocationReporterService.onLocationPermissionGranted()
+        }
         call.resolve(JSObject().put("granted", granted))
     }
 
@@ -353,8 +300,6 @@ class BtLocationReporterPlugin : Plugin() {
 
     @PluginMethod
     override fun requestPermissions(call: PluginCall) {
-        // Parse which permissions to request.
-        // null / empty array → request all missing permissions (default behaviour).
         val requested: Set<String> = call.getArray("permissions")
             ?.let { arr -> (0 until arr.length()).mapNotNull { runCatching { arr.getString(it).lowercase() }.getOrNull() }.toSet() }
             ?.takeIf { it.isNotEmpty() }
@@ -363,28 +308,29 @@ class BtLocationReporterPlugin : Plugin() {
         val requestBt       = "bluetooth"      in requested || "bluetoothscan" in requested
         val requestLocation = "location"       in requested
 
-        // Mantener el call vivo mientras la coroutine espera las respuestas del usuario.
-        bridge.saveCall(call)
-
-        pluginScope.launch {
-            try {
-                val btNeeded       = requestBt       && !checkBluetoothPermissionsGranted()
-                val locationNeeded = requestLocation && !checkLocationPermissionGranted()
-                if (btNeeded || locationNeeded) {
-                    requestAllMissingPermissionsSuspend(
-                        includeBluetooth = requestBt,
-                        includeLocation  = requestLocation
-                    )
-                }
-                val status = buildPermissionsStatus()
-                bridge.releaseCall(call)
-                call.resolve(status)
-                emitPermissionsChanged()
-            } catch (e: Exception) {
-                bridge.releaseCall(call)
-                call.reject("Permission request failed", e)
-            }
+        val aliasesToRequest = mutableListOf<String>()
+        if (requestBt && !checkBluetoothPermissionsGranted()) {
+            aliasesToRequest.add("bluetooth")
         }
+        if (requestLocation && !checkLocationPermissionGranted()) {
+            aliasesToRequest.add("location")
+        }
+
+        if (aliasesToRequest.isEmpty()) {
+            val status = buildPermissionsStatus()
+            call.resolve(status)
+            emitPermissionsChanged()
+            return
+        }
+
+        requestPermissionForAliases(aliasesToRequest.toTypedArray(), call, "permissionsCallback")
+    }
+
+    @PermissionCallback
+    private fun permissionsCallback(call: PluginCall) {
+        val status = buildPermissionsStatus()
+        call.resolve(status)
+        emitPermissionsChanged()
     }
 
     // ── Helper methods ─────────────────────────────────────────────────────
@@ -420,67 +366,7 @@ class BtLocationReporterPlugin : Plugin() {
         ) == PackageManager.PERMISSION_GRANTED
     }
 
-    private suspend fun requestBluetoothPermissionsSuspend(): Boolean {
-        if (checkBluetoothPermissionsGranted()) return true
-        return suspendCancellableCoroutine { cont ->
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                btPermissionContinuation = cont
-                cont.invokeOnCancellation {
-                    if (btPermissionContinuation === cont) btPermissionContinuation = null
-                }
-                ActivityCompat.requestPermissions(
-                    activity,
-                    arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN),
-                    BT_PERMISSION_REQUEST_CODE
-                )
-            } else {
-                cont.resume(true)
-            }
-        }
-    }
 
-    private suspend fun requestLocationPermissionSuspend(): Boolean {
-        if (checkLocationPermissionGranted()) return true
-        return suspendCancellableCoroutine { cont ->
-            locationPermissionContinuation = cont
-            cont.invokeOnCancellation {
-                if (locationPermissionContinuation === cont) locationPermissionContinuation = null
-            }
-            ActivityCompat.requestPermissions(
-                activity,
-                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
-                LOCATION_PERMISSION_REQUEST_CODE
-            )
-        }
-    }
-
-    /**
-     * Agrupa TODOS los permisos faltantes en una sola llamada a requestPermissions().
-     * Soluciona el bug de Android 13-15 donde pedir permisos en serie causa que
-     * onRequestPermissionsResult del segundo no llegue nunca.
-     */
-    private suspend fun requestAllMissingPermissionsSuspend(
-        includeBluetooth: Boolean = true,
-        includeLocation: Boolean = true
-    ): Boolean {
-        val needed = mutableListOf<String>()
-        if (includeBluetooth && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED)
-                needed.add(Manifest.permission.BLUETOOTH_CONNECT)
-            if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED)
-                needed.add(Manifest.permission.BLUETOOTH_SCAN)
-        }
-        if (includeLocation && ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
-            needed.add(Manifest.permission.ACCESS_FINE_LOCATION)
-        if (needed.isEmpty()) return true
-        return suspendCancellableCoroutine { cont ->
-            allPermissionsContinuation = cont
-            cont.invokeOnCancellation {
-                if (allPermissionsContinuation === cont) allPermissionsContinuation = null
-            }
-            ActivityCompat.requestPermissions(activity, needed.toTypedArray(), ALL_PERMISSIONS_REQUEST_CODE)
-        }
-    }
 
     private fun buildPermissionsStatus(): JSObject {
         val locationGranted = checkLocationPermissionGranted()
