@@ -128,6 +128,12 @@ class BleConnectionManager(
         }
     }
 
+    fun retryConnections() {
+        val disconnected = targetIds.filter { it !in connectedIds }
+        LOG("[BleConnectionManager] retrying connections for ${disconnected.size} devices")
+        disconnected.forEach { connectDevice(it, directConnect = true) }
+    }
+
     /**
      * Writes [data] to [charUuid] on [deviceId] with WRITE_TYPE_NO_RESPONSE.
      * Performs GATT service discovery automatically if the characteristic is not
@@ -216,7 +222,11 @@ class BleConnectionManager(
                     runCatching { stale.disconnect() }
                     runCatching { stale.close() }
                 }
-                gattMap[deviceId] = device.connectGatt(context, autoConnect, buildGattCallback(deviceId))
+                runCatching {
+                    gattMap[deviceId] = device.connectGatt(context, autoConnect, buildGattCallback(deviceId))
+                }.onFailure {
+                    LOG_ERROR("[BleConnectionManager] Failed to connectGatt for $deviceId: ${it.message}")
+                }
             }
         }
     }

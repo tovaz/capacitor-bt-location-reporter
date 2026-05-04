@@ -269,6 +269,8 @@ class BtLocationReporterService : Service() {
                 val toRemove = existingIds.filter { it !in ids }
                 if (toAdd.isNotEmpty())    bleManager.addDevices(toAdd)
                 if (toRemove.isNotEmpty()) bleManager.removeDevices(toRemove)
+                
+                bleManager.retryConnections()
             }
 
             parseDevicesAndCommands(devicesJson)
