@@ -104,6 +104,13 @@ export interface BleConnectionEvent {
     connected: boolean;
 }
 /**
+ * Event emitted when a BLE device fails to connect.
+ */
+export interface BleConnectionFailedEvent {
+    deviceId: string;
+    error: string;
+}
+/**
  * Event emitted when the first BLE device connects and location permission is needed.
  * The app should call requestLocationPermission() in response.
  */
@@ -264,6 +271,12 @@ export interface BtLocationReporterPlugin {
         remove: () => void;
     }>;
     /**
+     * Fired when a monitored BLE device fails to connect.
+     */
+    addListener(eventName: 'bleConnectionFailed', listenerFunc: (event: BleConnectionFailedEvent) => void): Promise<{
+        remove: () => void;
+    }>;
+    /**
      * Fired when the first BLE device connects and location permission is required.
      * Call requestLocationPermission() in response.
      */
@@ -303,6 +316,20 @@ export interface BtLocationReporterPlugin {
         characteristic: string;
         value: number[];
     }): Promise<void>;
+    /**
+     * Explicitly attempts to connect to a specific BLE device.
+     * Returns a promise that resolves if the connection succeeds or is already connected.
+     * Rejects if the connection fails or times out.
+     *
+     * @param options.deviceId BLE device UUID.
+     * @param options.timeout Timeout in milliseconds (default 15000).
+     */
+    connect(options: {
+        deviceId: string;
+        timeout?: number;
+    }): Promise<{
+        connected: boolean;
+    }>;
     /**
      * Temporarily reduces the GPS reporting interval for a specific device.
      *

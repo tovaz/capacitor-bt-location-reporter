@@ -80,6 +80,7 @@ class BtLocationReporterPlugin : Plugin() {
         const val EVENT_LIVE_TRACKING_STARTED = "liveTrackingStarted"
         const val EVENT_LIVE_TRACKING_STOPPED = "liveTrackingStopped"
         const val EVENT_PERMISSIONS_CHANGED = "permissionsChanged"
+        const val EVENT_BLE_CONNECTION_FAILED = "bleConnectionFailed"
 
         var instance: BtLocationReporterPlugin? = null
     }
@@ -471,6 +472,14 @@ class BtLocationReporterPlugin : Plugin() {
             put("connected", connected)
         })
     }
+    
+    fun notifyBleConnectionFailed(deviceId: String, error: String) {
+        LOG("[BtLocationReporterPlugin] bleConnectionFailed: $deviceId error=$error")
+        notifyListeners(EVENT_BLE_CONNECTION_FAILED, JSObject().apply {
+            put("deviceId", deviceId)
+            put("error", error)
+        })
+    }
 
     fun notifyLocationPermissionRequired() {
         LOG("[BtLocationReporterPlugin] Emitting locationPermissionRequired event")
@@ -685,6 +694,28 @@ class BtLocationReporterPlugin : Plugin() {
             } else {
                 LOG("[BtLocationReporterPlugin] writeWithoutResponse succeeded")
                 call.resolve()
+            }
+        }
+    }
+    
+    @PluginMethod
+    fun connect(call: PluginCall) {
+        val deviceId = call.getString("deviceId") ?: run {
+            call.reject("deviceId is required")
+            return
+        }
+        val timeout = call.getDouble("timeout")?.toLong() ?: 15000L
+
+        if (!BtLocationReporterService.isRunning) {
+            call.reject("Service not started — call start() first")
+            return
+        }
+
+        BtLocationReporterService.connectDevice(deviceId, timeout) { error ->
+            if (error != null) {
+                call.reject(error.message ?: "Connection failed")
+            } else {
+                call.resolve(JSObject().put("connected", true))
             }
         }
     }

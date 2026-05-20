@@ -28,6 +28,7 @@ class BleConnectionManager(
     initialIds: List<String>,
     private val onConnected: (deviceId: String, gatt: BluetoothGatt) -> Unit,
     private val onDisconnected: (deviceId: String, gatt: BluetoothGatt) -> Unit,
+    private val onConnectionFailed: ((deviceId: String, error: Exception) -> Unit)? = null,
     private val onServicesDiscovered: ((deviceId: String, gatt: BluetoothGatt, status: Int) -> Unit)? = null,
     private val onBluetoothOff: (() -> Unit)? = null,
 ) {
@@ -48,6 +49,7 @@ class BleConnectionManager(
         val callback: (Exception?) -> Unit
     )
     private val pendingWrites = ConcurrentHashMap<String, PendingWrite>()
+    private val connectionCallbacks = ConcurrentHashMap<String, CopyOnWriteArrayList<(Exception?) -> Unit>>()
 
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
@@ -132,6 +134,42 @@ class BleConnectionManager(
         val disconnected = targetIds.filter { it !in connectedIds }
         LOG("[BleConnectionManager] retrying connections for ${disconnected.size} devices")
         disconnected.forEach { connectDevice(it, directConnect = true) }
+    }
+
+    fun connect(deviceId: String, timeoutMs: Long = 15_000L, callback: (Exception?) -> Unit) {
+        if (deviceId in connectedIds) {
+            callback(null)
+            return
+        }
+
+        var callbacksList = connectionCallbacks[deviceId]
+        if (callbacksList == null) {
+            callbacksList = CopyOnWriteArrayList()
+            connectionCallbacks[deviceId] = callbacksList
+        }
+        callbacksList!!.add(callback)
+
+        if (deviceId !in targetIds) {
+            targetIds.add(deviceId)
+        }
+
+        val adapter = bluetoothAdapter
+        if (adapter == null || !adapter.isEnabled) {
+            val err = Exception("Bluetooth not powered on")
+            val pending = connectionCallbacks.remove(deviceId)
+            pending?.forEach { it(err) }
+            return
+        }
+
+        connectDevice(deviceId, directConnect = true)
+
+        scope.launch {
+            delay(timeoutMs)
+            val pending = connectionCallbacks.remove(deviceId)
+            if (!pending.isNullOrEmpty()) {
+                pending.forEach { it(Exception("Connection timeout")) }
+            }
+        }
     }
 
     /**
@@ -247,12 +285,39 @@ class BleConnectionManager(
     private fun buildGattCallback(deviceId: String) = object : BluetoothGattCallback() {
 
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            LOG("[BleConnectionManager] onConnection State Change -> ${newState}")
+            LOG("[BleConnectionManager] onConnection State Change -> status: $status, newState: $newState")
+            
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                val err = Exception("GATT Error status: $status")
+                LOG_ERROR("[BleConnectionManager] GATT Error $status for $deviceId")
+                
+                val pending = connectionCallbacks.remove(deviceId)
+                if (!pending.isNullOrEmpty()) {
+                    pending.forEach { it(err) }
+                }
+                
+                onConnectionFailed?.invoke(deviceId, err)
+                
+                val wasConnected = connectedIds.remove(deviceId)
+                val cachedGatt = gattMap.remove(deviceId)
+                if (wasConnected) {
+                    onDisconnected(deviceId, cachedGatt ?: gatt)
+                }
+                runCatching { gatt.disconnect() }
+                runCatching { gatt.close() }
+                scheduleReconnect(deviceId)
+                return
+            }
+
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     LOG("[BleConnectionManager] Connected: ${gatt.device?.name ?: deviceId}")
                     gattMap[deviceId] = gatt
                     if (deviceId !in connectedIds) connectedIds.add(deviceId)
+                    
+                    val pending = connectionCallbacks.remove(deviceId)
+                    pending?.forEach { it(null) }
+                    
                     onConnected(deviceId, gatt)
                     
                     // Discover services for GATT writes

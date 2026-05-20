@@ -29,9 +29,11 @@ class BleManager: NSObject {
 
     private let onConnected:    (String, CBPeripheral) -> Void
     private let onDisconnected: (String, CBPeripheral) -> Void
+    private var onConnectionFailed: ((String, Error) -> Void)?
     private var onBluetoothOff: (() -> Void)?
 
     private let reconnectDelay: TimeInterval = 3.0
+    private var connectionCallbacks: [String: [(Error?) -> Void]] = [:]
 
     /// Retained write sessions (CBPeripheral holds only a weak delegate reference)
     private var activeSessions: [UUID: BleWriteSession] = [:]
@@ -41,9 +43,11 @@ class BleManager: NSObject {
     init(deviceIds: [String],
          onConnected:    @escaping (String, CBPeripheral) -> Void,
          onDisconnected: @escaping (String, CBPeripheral) -> Void,
+         onConnectionFailed: ((String, Error) -> Void)? = nil,
          onBluetoothOff: (() -> Void)? = nil) {
         self.onConnected    = onConnected
         self.onDisconnected = onDisconnected
+        self.onConnectionFailed = onConnectionFailed
         self.onBluetoothOff = onBluetoothOff
         super.init()
         
@@ -90,8 +94,50 @@ class BleManager: NSObject {
             if let p = peripheralMap[uuid] { central.cancelPeripheralConnection(p) }
             peripheralMap.removeValue(forKey: uuid)
             connectedIds.removeAll { $0 == uuid.uuidString }
+            connectionCallbacks.removeValue(forKey: uuid.uuidString)
         }
     }
+
+    /// Explicitly connect to a device and wait for the result
+    func connect(deviceId: String, timeout: TimeInterval = 15.0, completion: @escaping (Error?) -> Void) {
+        guard let uuid = UUID(uuidString: deviceId) else {
+            completion(NSError(domain: "BleManager", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid UUID: \(deviceId)"]))
+            return
+        }
+
+        if connectedIds.contains(deviceId) {
+            completion(nil)
+            return
+        }
+
+        if connectionCallbacks[deviceId] == nil {
+            connectionCallbacks[deviceId] = []
+        }
+        connectionCallbacks[deviceId]?.append(completion)
+
+        if !targetUUIDs.contains(uuid) {
+            targetUUIDs.append(uuid)
+        }
+        
+        if central.state == .poweredOn {
+            connectUUIDs([uuid])
+        } else {
+            let error = NSError(domain: "BleManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Bluetooth not powered on"])
+            let callbacks = connectionCallbacks[deviceId] ?? []
+            connectionCallbacks.removeValue(forKey: deviceId)
+            callbacks.forEach { $0(error) }
+            return
+        }
+
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
+            guard let self = self else { return }
+            if let callbacks = self.connectionCallbacks[deviceId], !callbacks.isEmpty {
+                self.connectionCallbacks.removeValue(forKey: deviceId)
+                callbacks.forEach { $0(NSError(domain: "BleManager", code: 2, userInfo: [NSLocalizedDescriptionKey: "Connection timeout"])) }
+            }
+        }
+    }
+
 
     /// Writes `data` to `characteristicUUID` on `deviceId` without expecting a response.
     /// Performs GATT service/characteristic discovery automatically if needed.
@@ -283,7 +329,27 @@ extension BleManager: CBCentralManagerDelegate {
         let id = peripheral.identifier.uuidString
         LOG("[BleManager] Connected: \(peripheral.name ?? id)")
         if !connectedIds.contains(id) { connectedIds.append(id) }
+        
+        if let callbacks = connectionCallbacks[id] {
+            connectionCallbacks.removeValue(forKey: id)
+            callbacks.forEach { $0(nil) }
+        }
+        
         onConnected(id, peripheral)
+    }
+
+    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        let id = peripheral.identifier.uuidString
+        let err = error ?? NSError(domain: "BleManager", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to connect to \(id)"])
+        LOG("[BleManager] Failed to connect: \(id) - \(err.localizedDescription)")
+        
+        if let callbacks = connectionCallbacks[id] {
+            connectionCallbacks.removeValue(forKey: id)
+            callbacks.forEach { $0(err) }
+        }
+        
+        onConnectionFailed?(id, err)
+        scheduleReconnect(peripheral)
     }
 
     func centralManager(_ central: CBCentralManager,

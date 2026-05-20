@@ -100,6 +100,15 @@ class BtLocationReporterService : Service() {
             }
             svc.bleManager.writeWithoutResponse(deviceId, serviceUuid, charUuid, data, callback)
         }
+
+        fun connectDevice(deviceId: String, timeoutMs: Long, callback: (Exception?) -> Unit) {
+            val svc = serviceInstance
+            if (svc == null || !svc::bleManager.isInitialized) {
+                callback(Exception("Service not started — call start() first"))
+                return
+            }
+            svc.bleManager.connect(deviceId, timeoutMs, callback)
+        }
     }
 
     sealed class Command {
@@ -330,6 +339,7 @@ class BtLocationReporterService : Service() {
             initialIds   = ids,
             onConnected         = { deviceId, gatt   -> handleBleConnected(deviceId, gatt) },
             onDisconnected      = { deviceId, gatt   -> handleBleDisconnected(deviceId, gatt) },
+            onConnectionFailed  = { deviceId, error  -> handleBleConnectionFailed(deviceId, error) },
             onServicesDiscovered = { deviceId, gatt, status -> gpsSwitcher.onServicesDiscovered(deviceId, gatt, status) },
             onBluetoothOff      = { handleBluetoothOff() }
         )
@@ -591,6 +601,11 @@ class BtLocationReporterService : Service() {
     private fun handleBluetoothOff() {
         LOG("[BtLocationReporterService] Bluetooth OFF")
         pauseLocationUpdates()
+    }
+    
+    private fun handleBleConnectionFailed(deviceId: String, error: Exception) {
+        LOG("[BtLocationReporterService] BLE connection failed: $deviceId - ${error.message}")
+        BtLocationReporterPlugin.instance?.notifyBleConnectionFailed(deviceId, error.message ?: "Unknown error")
     }
 
     // ── Location ──────────────────────────────────────────────────────────

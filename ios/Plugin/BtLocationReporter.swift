@@ -185,6 +185,7 @@ class BtLocationReporter: NSObject {
             deviceIds: config.bleDeviceIds,
             onConnected: { [weak self] id, peripheral in self?.handleBleConnected(id, peripheral: peripheral) },
             onDisconnected: { [weak self] id, peripheral in self?.handleBleDisconnected(id, peripheral: peripheral) },
+            onConnectionFailed: { [weak self] id, error in self?.handleBleConnectionFailed(id, error: error) },
             onBluetoothOff: { [weak self] in self?.handleBluetoothOff() }
         )
         self.bleManager?.start()
@@ -276,6 +277,14 @@ class BtLocationReporter: NSObject {
                                         completion: completion)
     }
 
+    func connectDevice(deviceId: String, timeoutMs: Double, completion: @escaping (Error?) -> Void) {
+        guard let bleManager = bleManager else {
+            completion(NSError(domain: "BtLocationReporter", code: 0, userInfo: [NSLocalizedDescriptionKey: "BLE not started"]))
+            return
+        }
+        bleManager.connect(deviceId: deviceId, timeout: timeoutMs / 1000.0, completion: completion)
+    }
+
     func removeDevices(_ entries: [BtDeviceEntry]) {
         let bleIds = entries.map { $0.bleDeviceId }
         bleManager?.removeDevices(bleIds)
@@ -362,6 +371,11 @@ class BtLocationReporter: NSObject {
         LOG("[BtLocationReporter] Bluetooth OFF — pausing location")
         // locationMgr?.pause()
         // locationMgr?.enableLowPowerMode()
+    }
+    
+    private func handleBleConnectionFailed(_ deviceId: String, error: Error) {
+        LOG("[BtLocationReporter] BLE connection failed: \(deviceId) - \(error.localizedDescription)")
+        plugin?.emitBleConnectionFailed(deviceId: deviceId, error: error.localizedDescription)
     }
 
     // ── HTTP Report ───────────────────────────────────────────────────────

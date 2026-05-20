@@ -3,6 +3,50 @@ import CoreBluetooth
 import CoreLocation
 import Foundation
 import SystemConfiguration
+import UserNotifications
+
+/// Proxy para interceptar eventos de notificaciones y forzar su visualización en primer plano
+class NotificationDelegateProxy: NSObject, UNUserNotificationCenterDelegate {
+    weak var originalDelegate: UNUserNotificationCenterDelegate?
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        
+        let myOptions: UNNotificationPresentationOptions
+        if #available(iOS 14.0, *) {
+            myOptions = [.banner, .list, .sound, .badge]
+        } else {
+            myOptions = [.alert, .sound, .badge]
+        }
+        
+        if let original = originalDelegate, original.responds(to: #selector(userNotificationCenter(_:willPresent:withCompletionHandler:))) {
+            original.userNotificationCenter?(center, willPresent: notification) { originalOptions in
+                completionHandler(myOptions.union(originalOptions))
+            }
+        } else {
+            completionHandler(myOptions)
+        }
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        if let original = originalDelegate, original.responds(to: #selector(userNotificationCenter(_:didReceive:withCompletionHandler:))) {
+            original.userNotificationCenter?(center, didReceive: response, withCompletionHandler: completionHandler)
+        } else {
+            completionHandler()
+        }
+    }
+    
+    @available(iOS 12.0, *)
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                openSettingsFor notification: UNNotification?) {
+        if let original = originalDelegate, original.responds(to: #selector(userNotificationCenter(_:openSettingsFor:))) {
+            original.userNotificationCenter?(center, openSettingsFor: notification)
+        }
+    }
+}
 
 /// Capacitor plugin entry point for iOS.
 /// Delegates all heavy lifting to [BtLocationReporter] (the coordinator singleton).
@@ -24,6 +68,7 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "checkPermissions",          returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestPermissions",        returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "writeWithoutResponse",      returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "connect",                   returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "startLiveTracking",         returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stopLiveTracking",          returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getLiveTrackingDevices",    returnType: CAPPluginReturnPromise),
@@ -31,6 +76,7 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private var coordinator: BtLocationReporter?
     private let configStoreKey = "BtLocationReporterPlugin.config"
+    private var notificationProxy: NotificationDelegateProxy?
 
     // MARK: - Config Store Helpers
 
@@ -129,6 +175,14 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
         super.load()
         LOG("Plugin loaded - Capacitor bridge ready")
         LOG("Log file: \(FileLogger.shared.getLogFilePath())")
+        
+        // Configuramos el proxy para las notificaciones en foreground
+        let center = UNUserNotificationCenter.current()
+        let proxy = NotificationDelegateProxy()
+        proxy.originalDelegate = center.delegate
+        center.delegate = proxy
+        self.notificationProxy = proxy
+        
         Task { @MainActor in
             self.restoreIfPending()
         }
@@ -377,6 +431,14 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
         ])
     }
     
+    func emitBleConnectionFailed(deviceId: String, error: String) {
+        LOG("Emitting bleConnectionFailed event: deviceId=\(deviceId), error=\(error)")
+        notifyListeners("bleConnectionFailed", data: [
+            "deviceId": deviceId,
+            "error": error
+        ])
+    }
+    
     func emitLocationPermissionRequired() {
         LOG("Emitting locationPermissionRequired event")
         notifyListeners("locationPermissionRequired", data: [
@@ -564,6 +626,29 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
                 } else {
                     LOG("writeWithoutResponse succeeded")
                     call.resolve()
+                }
+            }
+        }
+    }
+    
+    @objc func connect(_ call: CAPPluginCall) {
+        guard let deviceId = call.getString("deviceId") else {
+            call.reject("deviceId is required")
+            return
+        }
+        let timeout = call.getDouble("timeout") ?? 15000.0 // 15 segundos por defecto
+        
+        Task { @MainActor in
+            guard let coordinator = self.coordinator else {
+                call.reject("Service not started — call start() first")
+                return
+            }
+            
+            coordinator.connectDevice(deviceId: deviceId, timeoutMs: timeout) { error in
+                if let error = error {
+                    call.reject(error.localizedDescription)
+                } else {
+                    call.resolve(["connected": true])
                 }
             }
         }

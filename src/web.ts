@@ -84,6 +84,14 @@ export class BtLocationReporterWeb
     this.warn();
   }
 
+  async connect(_options: {
+    deviceId: string;
+    timeout?: number;
+  }): Promise<{ connected: boolean }> {
+    this.warn();
+    return { connected: false };
+  }
+
   async startLiveTracking(_options: {
     pajDeviceId: string | number;
     intervalSec: number;
