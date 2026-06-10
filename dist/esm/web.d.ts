@@ -35,6 +35,12 @@ export declare class BtLocationReporterWeb extends WebPlugin implements BtLocati
         characteristic: string;
         value: number[];
     }): Promise<void>;
+    connect(_options: {
+        deviceId: string;
+        timeout?: number;
+    }): Promise<{
+        connected: boolean;
+    }>;
     startLiveTracking(_options: {
         pajDeviceId: string | number;
         intervalSec: number;

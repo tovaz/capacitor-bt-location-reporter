@@ -23,7 +23,11 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
     private var permissionCompletion: ((Bool) -> Void)?
     private var minReportInterval: TimeInterval = 30.0
     private var reportTimer: Timer?
-    private(set) var hasPermission = false
+    
+    var hasPermission: Bool {
+        let status = manager.authorizationStatus
+        return status == .authorizedAlways || status == .authorizedWhenInUse
+    }
 
     override init() {
         super.init()
@@ -66,10 +70,13 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
         guard !isTracking else { return }
         isTracking = true
         manager.allowsBackgroundLocationUpdates = true
-        manager.showsBackgroundLocationIndicator = false
+        
+        let status = manager.authorizationStatus
+        manager.showsBackgroundLocationIndicator = (status == .authorizedWhenInUse)
+        
         manager.startUpdatingLocation()
         scheduleTimer()
-        LOG("[LocationReporter] Started (background enabled, interval=\(minReportInterval)s)")
+        LOG("[LocationReporter] Started (background enabled, indicator=\(manager.showsBackgroundLocationIndicator), interval=\(minReportInterval)s)")
     }
 
     // Called only from main thread (resume, setReportInterval guarantee this).
@@ -141,10 +148,14 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
         let status = manager.authorizationStatus
         switch status {
         case .authorizedAlways:
-            hasPermission = true
             // Don't start yet - wait for first BLE connection
             completion(true)
-        case .authorizedWhenInUse, .notDetermined:
+        case .authorizedWhenInUse:
+            // Already have When In Use permission. Request upgrade to Always,
+            // but complete immediately with true to avoid hanging if the user declines.
+            manager.requestAlwaysAuthorization()
+            completion(true)
+        case .notDetermined:
             permissionCompletion = completion
             manager.requestAlwaysAuthorization()
         default:
@@ -159,7 +170,6 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
             return
         }
         isTracking = false
-        hasPermission = false
         reportTimer?.invalidate()
         reportTimer = nil
         manager.stopUpdatingLocation()
@@ -192,8 +202,10 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
         switch status {
         case .authorizedAlways:
             LOG("[LocationReporter] Auth: Always granted")
-            hasPermission = true
-            // Don't start yet - wait for first BLE connection
+            permissionCompletion?(true)
+            permissionCompletion = nil
+        case .authorizedWhenInUse:
+            LOG("[LocationReporter] Auth: When In Use granted")
             permissionCompletion?(true)
             permissionCompletion = nil
         case .denied, .restricted:
