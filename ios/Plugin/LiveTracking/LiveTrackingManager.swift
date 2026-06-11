@@ -47,6 +47,81 @@ final class LiveTrackingManager {
     private var sessions: [String: Session] = [:]
     // Pending expiration timers keyed by the stringified pajDeviceId.
     private var timers: [String: Timer] = [:]
+    
+    private let storeKey = "BtLocationReporterPlugin.liveTrackingSessions"
+    
+    private struct SessionCodable: Codable {
+        let pajDeviceId: String
+        let intervalSec: Double
+        let durationSec: Double
+        let startedAt: Date
+        let expiresAt: Date
+    }
+    
+    private func saveSessionsToPersistentStore() {
+        do {
+            let codables = sessions.values.map { session in
+                SessionCodable(
+                    pajDeviceId: session.pajDeviceId,
+                    intervalSec: session.intervalSec,
+                    durationSec: session.durationSec,
+                    startedAt: session.startedAt,
+                    expiresAt: session.expiresAt
+                )
+            }
+            let data = try JSONEncoder().encode(codables)
+            UserDefaults.standard.set(data, forKey: storeKey)
+            LOG("[LiveTrackingManager] Persisted \(codables.count) active sessions to UserDefaults")
+        } catch {
+            LOG_ERROR("[LiveTrackingManager] Failed to persist sessions: \(error)")
+        }
+    }
+    
+    func restorePersistedSessions() {
+        guard let data = UserDefaults.standard.data(forKey: storeKey) else { return }
+        do {
+            let codables = try JSONDecoder().decode([SessionCodable].self, from: data)
+            let now = Date()
+            var restoredAny = false
+            
+            for c in codables {
+                if c.expiresAt > now {
+                    let remaining = c.expiresAt.timeIntervalSince(now)
+                    let session = Session(
+                        pajDeviceId: c.pajDeviceId,
+                        intervalSec: c.intervalSec,
+                        durationSec: c.durationSec,
+                        startedAt: c.startedAt,
+                        expiresAt: c.expiresAt
+                    )
+                    sessions[c.pajDeviceId] = session
+                    
+                    // Re-schedule timer
+                    let timer = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { [weak self] _ in
+                        Task { @MainActor in
+                            self?.autoExpire(pajDeviceId: c.pajDeviceId)
+                        }
+                    }
+                    RunLoop.main.add(timer, forMode: .common)
+                    timers[c.pajDeviceId] = timer
+                    
+                    restoredAny = true
+                    LOG("[LiveTrackingManager] Restored persisted session for pajDeviceId=\(c.pajDeviceId), remaining=\(Int(remaining))s")
+                } else {
+                    LOG("[LiveTrackingManager] Persisted session for \(c.pajDeviceId) has already expired, discarding")
+                }
+            }
+            if restoredAny {
+                // Save updated list without the expired ones
+                saveSessionsToPersistentStore()
+                safeNotifyIntervalChanged()
+            } else {
+                UserDefaults.standard.removeObject(forKey: storeKey)
+            }
+        } catch {
+            LOG_ERROR("[LiveTrackingManager] Failed to restore sessions: \(error)")
+        }
+    }
 
     private init() {}
 
@@ -89,6 +164,7 @@ final class LiveTrackingManager {
 
         LOG("[LiveTrackingManager] started pajDeviceId=\(trimmed) intervalSec=\(intervalSec) durationSec=\(durationSec)")
 
+        saveSessionsToPersistentStore()
         safeNotifyStarted(session)
         safeNotifyIntervalChanged()
         return session
@@ -101,6 +177,9 @@ final class LiveTrackingManager {
         guard sessions[pajDeviceId] != nil else { return false }
         sessions.removeValue(forKey: pajDeviceId)
         cancelPending(pajDeviceId: pajDeviceId)
+        
+        saveSessionsToPersistentStore()
+        
         safeNotifyStopped(pajDeviceId: pajDeviceId, reason: "manual")
         safeNotifyIntervalChanged()
         return true
@@ -115,6 +194,9 @@ final class LiveTrackingManager {
         timers.values.forEach { $0.invalidate() }
         timers.removeAll()
         sessions.removeAll()
+        
+        UserDefaults.standard.removeObject(forKey: storeKey)
+        
         safeNotifyStopped(pajDeviceId: nil, reason: "stopAll")
         safeNotifyIntervalChanged()
         return count
@@ -146,6 +228,12 @@ final class LiveTrackingManager {
     /// Wipes internal state without emitting events. Called from the
     /// coordinator's `stop()` so state never outlives the session.
     func clear() {
+        clearMemory()
+        UserDefaults.standard.removeObject(forKey: storeKey)
+    }
+
+    /// Wipes in-memory session timers and dictionary without clearing UserDefaults.
+    func clearMemory() {
         timers.values.forEach { $0.invalidate() }
         timers.removeAll()
         sessions.removeAll()
@@ -158,6 +246,9 @@ final class LiveTrackingManager {
         sessions.removeValue(forKey: pajDeviceId)
         timers.removeValue(forKey: pajDeviceId)
         LOG("[LiveTrackingManager] auto-expired pajDeviceId=\(pajDeviceId)")
+        
+        saveSessionsToPersistentStore()
+        
         safeNotifyStopped(pajDeviceId: pajDeviceId, reason: "expired")
         safeNotifyIntervalChanged()
     }

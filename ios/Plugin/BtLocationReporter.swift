@@ -166,8 +166,9 @@ class BtLocationReporter: NSObject {
         )
         self.liveTrackingBridge = bridge
         LiveTrackingManager.shared.listener = bridge
-        // Make sure any leftover sessions from a previous start are gone.
-        LiveTrackingManager.shared.clear()
+        // Make sure any leftover in-memory sessions from a previous start are gone, and load persisted ones.
+        LiveTrackingManager.shared.clearMemory()
+        LiveTrackingManager.shared.restorePersistedSessions()
         
         // 2. Setup GPS Switcher for GATT commands
         self.gpsSwitcher = GpsSwitcher()
