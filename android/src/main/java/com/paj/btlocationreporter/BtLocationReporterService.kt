@@ -353,15 +353,19 @@ class BtLocationReporterService : Service() {
 
     private fun startMonitoring() {
         networkCallback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                LOG("[BtLocationReporterService] Network available")
-                hasInternet = true
-                notifyConditionsChanged()
+            // React to capability changes (e.g. VALIDATED flag added/removed)
+            // rather than to individual interface events (onAvailable/onLost).
+            // This prevents false GPS_ON/GPS_OFF commands when switching
+            // between WiFi and cellular while both have internet.
+            override fun onCapabilitiesChanged(
+                network: Network,
+                networkCapabilities: NetworkCapabilities
+            ) {
+                updateInternetState()
             }
             override fun onLost(network: Network) {
-                LOG("[BtLocationReporterService] Network lost")
-                hasInternet = false
-                notifyConditionsChanged()
+                // Re-evaluate: another interface may still provide internet.
+                updateInternetState()
             }
         }
 
@@ -435,6 +439,51 @@ class BtLocationReporterService : Service() {
      */
     private fun canSendGpsOff(): Boolean =
         hasInternet && hasLocationPermission() && isLocationEnabled()
+
+    /**
+     * Re-evaluates whether validated internet is available (regardless of
+     * interface — WiFi or cellular) and acts only when the state changes:
+     *
+     * - Lost → sends GPS_ON via [GpsSwitcher] (device resumes its own GPS).
+     * - Recovered → evicts OkHttp's stale connection pool, fires an
+     *   immediate location report, then sends GPS_OFF via [GpsSwitcher].
+     *
+     * Using [checkInternetAvailable] (which checks NET_CAPABILITY_VALIDATED)
+     * avoids false positives when the OS switches between WiFi and cellular.
+     */
+    private fun updateInternetState() {
+        val nowHasInternet = checkInternetAvailable()
+        if (nowHasInternet == hasInternet) return   // no real change — ignore
+
+        hasInternet = nowHasInternet
+        LOG("[BtLocationReporterService] Internet state changed → hasInternet=$hasInternet")
+
+        if (nowHasInternet) {
+            // Flush OkHttp connection pool so next POST uses the new interface.
+            httpClient.connectionPool.evictAll()
+            // Fire an immediate report without waiting for the next 5-second tick.
+            triggerImmediateReport()
+        }
+        notifyConditionsChanged()
+    }
+
+    /**
+     * Requests the last known location from [FusedLocationProviderClient] and,
+     * if available, resets the throttle and calls [onNewLocation] immediately.
+     * Safe to call from any state — guards are checked before doing anything.
+     */
+    @SuppressLint("MissingPermission")
+    private fun triggerImmediateReport() {
+        if (!isRunning || !isLocationTracking) return
+        if (!hasLocationPermission() || !::bleManager.isInitialized || !::fusedClient.isInitialized) return
+        fusedClient.lastLocation.addOnSuccessListener { location ->
+            if (location != null) {
+                LOG("[BtLocationReporterService] triggerImmediateReport: firing on network recovery")
+                lastReportTime = 0L   // reset throttle so onNewLocation posts immediately
+                onNewLocation(location)
+            }
+        }
+    }
 
     /**
      * Evaluates current conditions and notifies [GpsSwitcher] so it can

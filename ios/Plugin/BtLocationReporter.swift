@@ -2,6 +2,7 @@ import Foundation
 import CoreBluetooth
 import CoreLocation
 import UserNotifications
+import Network
 
 /// BLE GATT command to write to a characteristic.
 struct BleCommand {
@@ -116,6 +117,13 @@ class BtLocationReporter: NSObject {
     private var dynamicPajIdMap: [String: String] = [:]
     private var locationPermissionRequested = false
 
+    // ── Network monitor ──────────────────────────────────────────────────
+    // Uses NWPathMonitor (semantic level) instead of per-interface events.
+    // Stays .satisfied when switching WiFi ↔ cellular while both have internet.
+    private var pathMonitor: NWPathMonitor?
+    /// Tracks the last known satisfaction state to detect real transitions.
+    private var lastNetworkSatisfied = false
+
     /// Retained bridge that feeds `LiveTrackingManager` events back into the
     /// plugin (for JS emission) and into `applyEffectiveInterval()` (for
     /// reconfiguring the `LocationReporter` throttle).
@@ -192,6 +200,8 @@ class BtLocationReporter: NSObject {
         self.bleManager?.start()
         
         LOG("[BtLocationReporter] Started successfully (location paused until BLE connects and permission granted)")
+        // Start semantic network monitoring (WiFi or cellular — doesn't matter).
+        startNetworkMonitor()
         completion(nil)
     }
     
@@ -214,6 +224,11 @@ class BtLocationReporter: NSObject {
 
     func stop() {
         isRunning = false
+        // Cancel network monitor before tearing down other components so no
+        // late callbacks arrive after locationMgr / bleManager are nil.
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        lastNetworkSatisfied = false
         bleManager?.stop()
         bleManager = nil
         locationMgr?.stop()
@@ -231,6 +246,46 @@ class BtLocationReporter: NSObject {
         liveTrackingBridge = nil
 
         LOG("[BtLocationReporter] Stopped")
+    }
+
+    // ── Network monitor ───────────────────────────────────────────────────
+
+    /**
+     * Starts an `NWPathMonitor` that tracks semantic internet availability
+     * (not per-interface). When connectivity is restored after a loss,
+     * fires an immediate location report so the backend receives data
+     * within ~1 s instead of waiting for the next timer tick.
+     *
+     * `lastNetworkSatisfied` is pre-set to `true` on start so the initial
+     * "satisfied" event from the monitor does NOT trigger a spurious extra
+     * report at startup (one will fire naturally on the first timer tick).
+     */
+    private func startNetworkMonitor() {
+        // Mark as already satisfied so the very first callback (which fires
+        // immediately) is treated as "no change" and does not double-report.
+        lastNetworkSatisfied = true
+
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let isSatisfied = (path.status == .satisfied)
+
+                if isSatisfied && !self.lastNetworkSatisfied && self.isRunning {
+                    LOG("[BtLocationReporter] Internet recovered (¿network path satisfied¿) — firing immediate report")
+                    if let location = self.locationMgr?.lastLocation {
+                        // onNewLocation respects all guards (isRunning, connectedIds, config)
+                        self.onNewLocation(location)
+                    }
+                } else if !isSatisfied && self.lastNetworkSatisfied {
+                    LOG("[BtLocationReporter] Internet lost (network path unsatisfied)")
+                }
+
+                self.lastNetworkSatisfied = isSatisfied
+            }
+        }
+        monitor.start(queue: DispatchQueue.global(qos: .utility))
+        self.pathMonitor = monitor
     }
 
     // MARK: - Live tracking helpers
