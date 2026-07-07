@@ -23,6 +23,7 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
     private var permissionCompletion: ((Bool) -> Void)?
     private var minReportInterval: TimeInterval = 30.0
     private var reportTimer: Timer?
+    private var lastReportTime: Date?
     
     var hasPermission: Bool {
         let status = manager.authorizationStatus
@@ -75,8 +76,9 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
         manager.showsBackgroundLocationIndicator = (status == .authorizedWhenInUse)
         
         manager.startUpdatingLocation()
+        manager.startMonitoringSignificantLocationChanges()
         scheduleTimer()
-        LOG("[LocationReporter] Started (background enabled, indicator=\(manager.showsBackgroundLocationIndicator), interval=\(minReportInterval)s)")
+        LOG("[LocationReporter] Started (background enabled, indicator=\(manager.showsBackgroundLocationIndicator), interval=\(minReportInterval)s, significant location changes active)")
     }
 
     // Called only from main thread (resume, setReportInterval guarantee this).
@@ -96,8 +98,15 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
             LOG("[LocationReporter] Timer fired but no location yet — waiting")
             return
         }
-        LOG("[LocationReporter] Timer fired — reporting (\(String(format: "%.5f", location.coordinate.latitude)), \(String(format: "%.5f", location.coordinate.longitude))) acc=\(Int(location.horizontalAccuracy))m")
-        onLocationUpdate?(location)
+        let now = Date()
+        let elapsed = lastReportTime.map { now.timeIntervalSince($0) } ?? Double.greatestFiniteMagnitude
+        if elapsed >= minReportInterval - 0.1 {
+            LOG("[LocationReporter] Timer fired — reporting (\(String(format: "%.5f", location.coordinate.latitude)), \(String(format: "%.5f", location.coordinate.longitude))) acc=\(Int(location.horizontalAccuracy))m")
+            lastReportTime = now
+            onLocationUpdate?(location)
+        } else {
+            LOG("[LocationReporter] Timer fired but throttled (elapsed: \(Int(elapsed))s < minReportInterval: \(Int(minReportInterval))s)")
+        }
     }
     
     /// Pause location updates (saves battery when no BLE connected)
@@ -135,6 +144,7 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
         // without waiting for the first timer tick (up to 30 s).
         if let location = lastLocation {
             LOG("[LocationReporter] Immediate report on resume (BLE connect, last fix available)")
+            lastReportTime = Date()
             onLocationUpdate?(location)
         }
         LOG("[LocationReporter] Resumed (BLE device connected)")
@@ -173,6 +183,7 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
         reportTimer?.invalidate()
         reportTimer = nil
         manager.stopUpdatingLocation()
+        manager.stopMonitoringSignificantLocationChanges()
         LOG("[LocationReporter] Stopped")
     }
 
@@ -221,6 +232,14 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
         guard let location = locations.last else { return }
         // Keep lastLocation fresh — the timer picks it up on each tick.
         lastLocation = location
+        
+        let now = Date()
+        let elapsed = lastReportTime.map { now.timeIntervalSince($0) } ?? Double.greatestFiniteMagnitude
+        if elapsed >= minReportInterval {
+            LOG("[LocationReporter] Location updated — firing immediate report (\(String(format: "%.5f", location.coordinate.latitude)), \(String(format: "%.5f", location.coordinate.longitude)))")
+            lastReportTime = now
+            onLocationUpdate?(location)
+        }
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {

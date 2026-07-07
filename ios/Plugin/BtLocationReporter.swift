@@ -116,10 +116,12 @@ class BtLocationReporter: NSObject {
     private var gpsSwitcher: GpsSwitcher?
     private var dynamicPajIdMap: [String: String] = [:]
     private var locationPermissionRequested = false
+    private var bgTaskId: UIBackgroundTaskIdentifier = .invalid
 
     // ── Network monitor ──────────────────────────────────────────────────
     // Uses NWPathMonitor (semantic level) instead of per-interface events.
     // Stays .satisfied when switching WiFi ↔ cellular while both have internet.
+    // background task to keep app alive when entering background
     private var pathMonitor: NWPathMonitor?
     /// Tracks the last known satisfaction state to detect real transitions.
     private var lastNetworkSatisfied = false
@@ -133,6 +135,13 @@ class BtLocationReporter: NSObject {
         self.plugin = plugin
         super.init()
         LOG("[BtLocationReporter] Initialized")
+        
+        NotificationCenter.default.addObserver(self, selector: #selector(appDidEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appDidBecomeActive), name: UIApplication.didBecomeActiveNotification, object: nil)
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     // ── Public API ────────────────────────────────────────────────────────
@@ -224,6 +233,7 @@ class BtLocationReporter: NSObject {
 
     func stop() {
         isRunning = false
+        endBackgroundTask()
         // Cancel network monitor before tearing down other components so no
         // late callbacks arrive after locationMgr / bleManager are nil.
         pathMonitor?.cancel()
@@ -584,5 +594,38 @@ class BtLocationReporter: NSObject {
                 }
             }
         }
+    }
+
+    // MARK: - Background Task Management
+    
+    @objc private func appDidEnterBackground() {
+        Task { @MainActor in
+            self.beginBackgroundTaskIfNeeded()
+        }
+    }
+    
+    @objc private func appDidBecomeActive() {
+        Task { @MainActor in
+            self.endBackgroundTask()
+        }
+    }
+
+    private func beginBackgroundTaskIfNeeded() {
+        guard isRunning else { return }
+        guard bgTaskId == .invalid else { return }
+        
+        bgTaskId = UIApplication.shared.beginBackgroundTask(withName: "BtLocationReporter.finishWork") { [weak self] in
+            Task { @MainActor in
+                self?.endBackgroundTask()
+            }
+        }
+        LOG("[BtLocationReporter] Begin background task: \(bgTaskId)")
+    }
+    
+    private func endBackgroundTask() {
+        guard bgTaskId != .invalid else { return }
+        LOG("[BtLocationReporter] End background task: \(bgTaskId)")
+        UIApplication.shared.endBackgroundTask(bgTaskId)
+        bgTaskId = .invalid
     }
 }

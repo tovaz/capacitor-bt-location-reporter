@@ -55,6 +55,34 @@ Add the following to your app's `ios/App/App/Info.plist`:
 <string>We need Bluetooth access to connect to your PAJ tracker.</string>
 ```
 
+### 4. iOS — AppDelegate.swift updates (Recommended for background relaunch)
+
+To allow the plugin to automatically restore and resume tracking when iOS wakes the app up in the background (e.g. after the app was killed by memory constraints or a user force-quit and a significant location change occurs), update your `ios/App/App/AppDelegate.swift` file:
+
+```swift
+import UIKit
+import Capacitor
+
+@UIApplicationMain
+class AppDelegate: UIResponder, UIApplicationDelegate {
+
+    var window: UIWindow?
+
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        
+        // If the app was awakened in the background by a Significant Location Change (SLC)
+        if launchOptions?[.location] != nil {
+            // Set the flag so the plugin automatically restores when loaded by Capacitor
+            UserDefaults.standard.set(true, forKey: "BtLocationReporterPlugin.pendingRestore")
+        }
+
+        return ApplicationDelegate.shared.application(application, didFinishLaunchingWithOptions: launchOptions)
+    }
+    
+    // ... rest of your AppDelegate ...
+}
+```
+
 ---
 
 

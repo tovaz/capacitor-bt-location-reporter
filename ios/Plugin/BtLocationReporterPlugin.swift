@@ -139,15 +139,49 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
             )
         }
     }
+    private struct BleCommandCodable: Codable {
+        let name: String
+        let serviceUuid: String
+        let characteristicUuid: String
+        let value: String
+
+        init(command: BleCommand) {
+            self.name = command.name
+            self.serviceUuid = command.serviceUuid
+            self.characteristicUuid = command.characteristicUuid
+            self.value = command.value
+        }
+
+        func toCommand() -> BleCommand {
+            BleCommand(
+                name: name,
+                serviceUuid: serviceUuid,
+                characteristicUuid: characteristicUuid,
+                value: value
+            )
+        }
+    }
+
     private struct DeviceCodable: Codable {
         let bleDeviceId: String
         let pajDeviceId: String
+        let onConnectCommand: BleCommandCodable?
+        let onDisconnectCommand: BleCommandCodable?
+
         init(entry: BtDeviceEntry) {
             self.bleDeviceId = entry.bleDeviceId
             self.pajDeviceId = entry.pajDeviceId
+            self.onConnectCommand = entry.onConnectCommand.map { BleCommandCodable(command: $0) }
+            self.onDisconnectCommand = entry.onDisconnectCommand.map { BleCommandCodable(command: $0) }
         }
+
         func toEntry() -> BtDeviceEntry {
-            BtDeviceEntry(bleDeviceId: bleDeviceId, pajDeviceId: pajDeviceId, onConnectCommand: nil, onDisconnectCommand: nil)
+            BtDeviceEntry(
+                bleDeviceId: bleDeviceId,
+                pajDeviceId: pajDeviceId,
+                onConnectCommand: onConnectCommand?.toCommand(),
+                onDisconnectCommand: onDisconnectCommand?.toCommand()
+            )
         }
     }
     private struct NotificationTextsCodable: Codable {

@@ -88,9 +88,22 @@ class GpsSwitcher: NSObject {
     
     // ── Private: GATT Write ───────────────────────────────────────────────
     
-    private func sendCommand(bleDeviceId: String, command: BleCommand, isGpsOff: Bool) {
-        guard let peripheral = peripherals[bleDeviceId] else { return }
-        guard peripheral.state == .connected else { return }
+    private func sendCommand(bleDeviceId: String, command: BleCommand, isGpsOff: Bool, retryCount: Int = 1) {
+        guard let peripheral = peripherals[bleDeviceId] else {
+            LOG_ERROR("[GpsSwitcher] sendCommand failed: no peripheral for \(bleDeviceId)")
+            return
+        }
+        if peripheral.state != .connected {
+            if retryCount > 0 {
+                LOG("[GpsSwitcher] Peripheral \(bleDeviceId) not connected yet, retrying in 5s... (retries left: \(retryCount))")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+                    self?.sendCommand(bleDeviceId: bleDeviceId, command: command, isGpsOff: isGpsOff, retryCount: retryCount - 1)
+                }
+            } else {
+                LOG_ERROR("[GpsSwitcher] Peripheral \(bleDeviceId) not connected, giving up.")
+            }
+            return
+        }
         
         let serviceUUID = CBUUID(string: command.serviceUuid)
         let charUUID = CBUUID(string: command.characteristicUuid)
