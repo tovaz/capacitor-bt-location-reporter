@@ -76,9 +76,8 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
         manager.showsBackgroundLocationIndicator = (status == .authorizedWhenInUse)
         
         manager.startUpdatingLocation()
-        manager.startMonitoringSignificantLocationChanges()
         scheduleTimer()
-        LOG("[LocationReporter] Started (background enabled, indicator=\(manager.showsBackgroundLocationIndicator), interval=\(minReportInterval)s, significant location changes active)")
+        LOG("[LocationReporter] Started (background enabled, indicator=\(manager.showsBackgroundLocationIndicator), interval=\(minReportInterval)s)")
     }
 
     // Called only from main thread (resume, setReportInterval guarantee this).
@@ -183,28 +182,7 @@ class LocationReporter: NSObject, CLLocationManagerDelegate {
         reportTimer?.invalidate()
         reportTimer = nil
         manager.stopUpdatingLocation()
-        manager.stopMonitoringSignificantLocationChanges()
         LOG("[LocationReporter] Stopped")
-    }
-
-    /// Activa el modo bajo consumo: accuracy baja, distancia alta, pausa automática y solo cambios significativos.
-    /// Llama a este método cuando no haya dispositivos BLE conectados o el Bluetooth esté apagado.
-    func enableLowPowerMode() {
-        // Configuración recomendada para bajo consumo
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.distanceFilter = 500
-        manager.pausesLocationUpdatesAutomatically = true
-        manager.showsBackgroundLocationIndicator = false
-
-        // Detener cualquier tracking activo
-        if isTracking {
-            manager.stopUpdatingLocation()
-            isTracking = false
-        }
-
-        // Iniciar solo cambios significativos
-        manager.startMonitoringSignificantLocationChanges()
-        LOG("[LocationReporter] Low Power Mode ACTIVATED: accuracy=HundredMeters, distanceFilter=500m, pauses=YES, indicator=NO, usando startMonitoringSignificantLocationChanges()")
     }
 
     // ── CLLocationManagerDelegate ─────────────────────────────────────────

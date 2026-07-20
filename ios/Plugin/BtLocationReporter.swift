@@ -160,6 +160,14 @@ class BtLocationReporter: NSObject {
         LOG("[BtLocationReporter] Starting: \(config.devices.count) devices, interval=\(config.intervalMs)ms, debug=\(config.debug)")
         LOG("[BtLocationReporter] [PERSIST] start(config:) - after setting config and debugEnabled")
 
+        // If the app was relaunched directly in background (e.g. SLC wakeup),
+        // the `didEnterBackground` observer never fires, so no background task
+        // would be active. Request one here to give iOS enough CPU time for
+        // the BLE connection and async notification callbacks to complete.
+        if UIApplication.shared.applicationState != .active {
+            beginBackgroundTaskIfNeeded()
+        }
+
         // Show local notification about monitoring started
         showMonitoringStartedNotification()
 
@@ -211,6 +219,8 @@ class BtLocationReporter: NSObject {
         LOG("[BtLocationReporter] Started successfully (location paused until BLE connects and permission granted)")
         // Start semantic network monitoring (WiFi or cellular — doesn't matter).
         startNetworkMonitor()
+        // Register SLC so iOS can relaunch the app after a user force-quit.
+        BackgroundWakeupManager.shared.ensureSLCRegistered()
         completion(nil)
     }
     
@@ -245,6 +255,8 @@ class BtLocationReporter: NSObject {
         locationMgr = nil
         gpsSwitcher?.cleanup()
         gpsSwitcher = nil
+        // Stop SLC — user explicitly stopped the session.
+        BackgroundWakeupManager.shared.stopSLC()
 
         // Tear down the live tracking bridge so no residual timers or
         // listeners survive the stop. All sessions are explicitly cleared
@@ -508,9 +520,10 @@ class BtLocationReporter: NSObject {
         let texts = config?.texts ?? NotificationTexts.defaults
 
         // Check if permission is granted (don't request, just check)
-        center.getNotificationSettings { settings in
-            guard settings.authorizationStatus == .authorized else {
-                LOG("[BtLocationReporter] No notification permission, skipping BLE connection notification")
+        center.getNotificationSettings { [weak self] settings in
+            let status = settings.authorizationStatus
+            guard status == .authorized || status == .provisional else {
+                LOG("[BtLocationReporter] No notification permission (status=\(status.rawValue)), skipping BLE connection notification")
                 return
             }
 
@@ -528,6 +541,9 @@ class BtLocationReporter: NSObject {
                 trigger: nil  // nil = deliver immediately
             )
 
+            // Re-register our proxy right before posting so willPresent is
+            // guaranteed to reach us even if another plugin replaced the delegate.
+            self?.plugin?.ensureNotificationProxy()
             center.add(request) { error in
                 if let error = error {
                     LOG_ERROR("[BtLocationReporter] Failed to show notification: \(error.localizedDescription)")
@@ -549,8 +565,9 @@ class BtLocationReporter: NSObject {
         content.sound = .default
 
         center.getNotificationSettings { settings in
-            guard settings.authorizationStatus == .authorized else {
-                LOG("[BtLocationReporter] No notification permission, skipping BLE nearby notification")
+            let status = settings.authorizationStatus
+            guard status == .authorized || status == .provisional else {
+                LOG("[BtLocationReporter] No notification permission (status=\(status.rawValue)), skipping BLE nearby notification")
                 return
             }
             let request = UNNotificationRequest(
@@ -572,9 +589,10 @@ class BtLocationReporter: NSObject {
     private func showMonitoringStartedNotification() {
         let center = UNUserNotificationCenter.current()
         let texts = config?.texts ?? NotificationTexts.defaults
-        center.getNotificationSettings { settings in
-            guard settings.authorizationStatus == .authorized else {
-                LOG("[BtLocationReporter] No notification permission, skipping monitoring started notification")
+        center.getNotificationSettings { [weak self] settings in
+            let status = settings.authorizationStatus
+            guard status == .authorized || status == .provisional else {
+                LOG("[BtLocationReporter] No notification permission (status=\(status.rawValue)), skipping monitoring started notification")
                 return
             }
             let content = UNMutableNotificationContent()
@@ -586,6 +604,10 @@ class BtLocationReporter: NSObject {
                 content: content,
                 trigger: nil
             )
+
+            // Re-register our proxy right before posting so willPresent is
+            // guaranteed to reach us even if another plugin replaced the delegate.
+            self?.plugin?.ensureNotificationProxy()
             center.add(request) { error in
                 if let error = error {
                     LOG_ERROR("[BtLocationReporter] Failed to show monitoring started notification: \(error.localizedDescription)")

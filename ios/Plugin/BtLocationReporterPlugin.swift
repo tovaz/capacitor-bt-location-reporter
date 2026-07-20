@@ -12,20 +12,28 @@ class NotificationDelegateProxy: NSObject, UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        
-        let myOptions: UNNotificationPresentationOptions
-        if #available(iOS 14.0, *) {
-            myOptions = [.banner, .list, .sound, .badge]
-        } else {
-            myOptions = [.alert, .sound, .badge]
-        }
-        
-        if let original = originalDelegate, original.responds(to: #selector(userNotificationCenter(_:willPresent:withCompletionHandler:))) {
-            original.userNotificationCenter?(center, willPresent: notification) { originalOptions in
-                completionHandler(myOptions.union(originalOptions))
+
+        let id = notification.request.identifier
+        let isOurNotification = id.hasPrefix("bt_") || id.hasPrefix("ble_")
+
+        if isOurNotification {
+            // Force foreground display only for this plugin's notifications.
+            let myOptions: UNNotificationPresentationOptions
+            if #available(iOS 14.0, *) {
+                myOptions = [.banner, .list, .sound, .badge]
+            } else {
+                myOptions = [.alert, .sound, .badge]
             }
-        } else {
             completionHandler(myOptions)
+        } else {
+            // Not our notification — pass through to the original delegate unchanged
+            // so we don't interfere with other plugins that may suppress foreground.
+            if let original = originalDelegate,
+               original.responds(to: #selector(userNotificationCenter(_:willPresent:withCompletionHandler:))) {
+                original.userNotificationCenter?(center, willPresent: notification, withCompletionHandler: completionHandler)
+            } else {
+                completionHandler([])
+            }
         }
     }
 
@@ -211,33 +219,68 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
         LOG("Log file: \(FileLogger.shared.getLogFilePath())")
         
         // Configuramos el proxy para las notificaciones en foreground
-        let center = UNUserNotificationCenter.current()
-        let proxy = NotificationDelegateProxy()
-        proxy.originalDelegate = center.delegate
-        center.delegate = proxy
-        self.notificationProxy = proxy
+        ensureNotificationProxy()
+
+        // Register SLC wakeup callback so we restore even when the SLC event
+        // fires *after* load() (race condition where Capacitor is still starting
+        // when iOS delivers the queued location to BackgroundWakeupManager).
+        BackgroundWakeupManager.shared.onLocationWakeup = { [weak self] in
+            Task { @MainActor in
+                self?.restoreIfPending()
+            }
+        }
         
         Task { @MainActor in
             self.restoreIfPending()
         }
     }
 
+    /**
+     * Registers (or re-registers) the NotificationDelegateProxy as the
+     * UNUserNotificationCenter delegate.
+     *
+     * Safe to call multiple times: if the current delegate is already our proxy
+     * this is a no-op. Otherwise it wraps whatever delegate is currently set
+     * (from another plugin) so both coexist without conflict.
+     */
+    func ensureNotificationProxy() {
+        let center = UNUserNotificationCenter.current()
+        // Already our proxy — nothing to do.
+        if center.delegate === notificationProxy { return }
+        let proxy = NotificationDelegateProxy()
+        proxy.originalDelegate = center.delegate
+        center.delegate = proxy
+        self.notificationProxy = proxy
+        LOG("[BtLocationReporterPlugin] Notification proxy (re)registered")
+    }
+
     @MainActor
     private func restoreIfPending() {
-        // Solo restaurar si el flag está presente Y si iOS nos relanzó en background (no si el usuario abrió la app normalmente).
-        // Esto evita que se cree CBCentralManager (y se pida permiso BT) en aperturas normales del usuario.
-        let pendingRestore = UserDefaults.standard.bool(forKey: "BtLocationReporterPlugin.pendingRestore")
-        guard pendingRestore else { return }
+        // Accept a restore triggered by either CoreBluetooth state restoration
+        // (pendingRestore) or Significant Location Changes wakeup (pendingLocationRestore).
+        let pendingBLE = UserDefaults.standard.bool(forKey: "BtLocationReporterPlugin.pendingRestore")
+        let pendingLocation = UserDefaults.standard.bool(forKey: BackgroundWakeupManager.pendingRestoreKey)
+        guard pendingBLE || pendingLocation else { return }
 
+        // Skip if the user opened the app themselves — JS will call start() explicitly.
         let isBackgroundLaunch = UIApplication.shared.applicationState != .active
         guard isBackgroundLaunch else {
             LOG("[BtLocationReporterPlugin] App abierta en primer plano — omitiendo auto-restore (se requiere start() explícito desde JS)")
             return
         }
 
-        guard let config = loadConfig() else { return }
-        LOG("[BtLocationReporterPlugin] Relanzamiento BLE en background detectado — restaurando sesión")
+        guard let config = loadConfig() else {
+            LOG_ERROR("[BtLocationReporterPlugin] pendingRestore set but no config found — cannot restore")
+            return
+        }
+
+        let reason = pendingBLE ? "CoreBluetooth" : "Significant Location Changes"
+        LOG("[BtLocationReporterPlugin] Background relaunch via \(reason) — restoring session")
+
+        // Clear both flags so a subsequent foreground open doesn't re-restore.
         UserDefaults.standard.removeObject(forKey: "BtLocationReporterPlugin.pendingRestore")
+        UserDefaults.standard.removeObject(forKey: BackgroundWakeupManager.pendingRestoreKey)
+
         restoreCoordinatorIfNeeded(config: config)
     }
 
@@ -264,6 +307,10 @@ public class BtLocationReporterPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func start(_ call: CAPPluginCall) {
         LOG_INFO("start() called from JS")
+
+        // Re-register the notification proxy in case another plugin overwrote
+        // UNUserNotificationCenter.delegate between load() and start().
+        ensureNotificationProxy()
         
         guard let rawDevices = call.getArray("devices") as? [[String: Any]], !rawDevices.isEmpty else {
             LOG_ERROR("devices array is required and must not be empty")
